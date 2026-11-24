@@ -6,7 +6,7 @@ license: BSD3
 license-file: LICENSE
 author: 林 起靖
 maintainer: gijungdduk@naver.com
-copyright: 2021-2026, Kijeong Lim
+copyright: 2026, Gijung Im
 category: Theorem Provers
 build-type: Simple
 cabal-version: 2.0
