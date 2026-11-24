@@ -1,0 +1,13 @@
+dist-newstyle/
+.stack-work/
+*.o
+*.hi
+*.dyn_o
+*.dyn_hi
+*.prof
+*.hp
+cabal.project.local
+cabal.project.local~
+.ghc.environment.*
+.lolo/
+.lol-publish.lock

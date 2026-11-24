@@ -1,0 +1,467 @@
+% Structural elimination proposals. The elaborator and final ground kernel
+% check every match, recursive call, elimination sort and guard condition.
+import lol.hol.proof.
+
+type p_destruct (raw -> list string -> ptac).
+type p_induction (raw -> list string -> ptac).
+type p_assert (string -> raw -> ptac).
+type p_specialize (raw -> ptac).
+type p_exfalso ptac.
+
+type pd_specialize_local (raw -> string -> tm -> o).
+kind pdname type.
+type pd_name (string -> string -> tm -> pdname).
+kind pdih type.
+type pd_ih (string -> string -> list tm -> tm -> tm -> pdih).
+type pd_hint (list string -> string -> string -> list string -> o).
+type pd_names (list pdname -> raw -> raw -> o).
+type pd_ihs (list pdih -> raw -> raw -> o).
+type pd_scrutinee (raw -> raw -> tm -> tm -> nat -> nat -> list lvl -> nat -> list tm -> list tm -> list (list mark) -> o).
+type pd_branches (nat -> nat -> list lvl -> nat -> list tm -> list (list mark) -> list string -> list string -> list rbranch -> o).
+type pd_branch (tm -> list mark -> list pfhint -> list string -> list string -> list pdname -> raw -> o).
+type pd_function_type (tm -> tm -> tm -> tm -> nat -> o).
+type pd_body (tm -> tm -> tm -> tm -> nat -> nat -> list lvl -> nat -> list tm -> list (list mark) -> list string -> list string -> raw -> o).
+type pd_motive_raw (tm -> raw -> o).
+type pd_ind_branches (nat -> nat -> list lvl -> nat -> nat -> list tm -> tm -> tm -> list (list mark) -> list string -> list string -> list rbranch -> o).
+type pd_ind_branch (nat -> nat -> list lvl -> nat -> list tm -> tm -> tm -> tm -> list pfhint -> list mark -> list string -> list string -> list pdname -> list pdih -> raw -> o).
+type pd_ind_field (mark -> string -> nat -> nat -> list lvl -> nat -> list tm -> tm -> tm -> tm -> tm -> list string -> list string -> list pdih -> list pdih -> string -> o).
+type pd_ih_term (nat -> nat -> list lvl -> nat -> list tm -> tm -> tm -> tm -> tm -> tm -> tm -> o).
+type pd_ih_head (nat -> nat -> list lvl -> nat -> list tm -> tm -> tm -> tm -> tm -> tm -> tm -> o).
+type pd_refs (list tm -> list raw -> o).
+type pd_append (list tm -> list tm -> list tm -> o).
+kind pddep type.
+type pd_dep (string -> tm -> tm -> pddep).
+% a dependent that is a local definition: its name, its variable, its type and its body
+type pd_def (string -> tm -> tm -> tm -> pddep).
+type pd_order (list pddep -> list pddep -> o).
+type pd_ready (list pddep -> list pddep -> pddep -> list pddep -> o).
+type pd_dependency (pddep -> tm -> o).
+type pd_among (tm -> list tm -> o).
+type pd_hyps (list tm -> list pddep -> list pddep -> o).
+type pd_gone (tm -> list tm -> list tm -> list tm -> o).
+type pd_index_vars (list tm -> list tm -> list tm -> list tm -> list tm -> o).
+type pd_dependents (list pddep -> list tm -> list pddep -> o).
+type pd_generalize (list pddep -> tm -> tm -> o).
+type pd_moved (list pddep -> tm -> tm -> list pddep -> o).
+type pd_reintro (list pddep -> raw -> raw -> o).
+type pd_clear (list tm -> raw -> raw -> o).
+type pd_rest (list tm -> list pddep -> tm -> raw -> o).
+type pd_dep_refs (list pddep -> list raw -> o).
+type pd_allowed (tm -> o).
+type pd_new_names (list string -> list string -> o).
+type pd_new_name (string -> list string -> list string -> o).
+type pd_applied (raw -> list raw -> raw -> o).
+type pd_replaced (list tm -> tm -> list pddep -> o).
+type pd_append_raw (list raw -> list raw -> list raw -> o).
+pd_append [] Ys Ys.
+pd_append (X :: Xs) Ys (X :: Zs) :- pd_append Xs Ys Zs.
+
+pd_hint [] Default Default [].
+pd_hint (Name :: Names) Default Name Names.
+pd_names [] R R.
+pd_names (pd_name Given Name X :: Names) R Out :- pd_names Names R T, pd_place X T S, p_name_raw Given Name X S Out.
+type pd_field_hints (nat -> nat -> nat -> list pfhint -> o).
+pd_field_hints B I J Hints :- p_field_names B I J Hints, !.
+pd_field_hints B I J [].
+type pd_field_label (string -> string -> tm -> string -> o).
+pd_field_label "" Hint D Name :- !, p_choose_name Hint D Name.
+pd_field_label Given Hint D Given.
+% Rocq reuses the eliminated hypothesis for direct recursive arguments.
+% Two or more such arguments reserve v and v0, producing v1, v2, ...
+type pd_rec_scope (nat -> nat -> tm -> list mark -> o -> o).
+pd_rec_scope B I T Marks G :- pd_replacing X, p_live Name Y, X == Y,
+    e_absent (e_absent (pd_two_direct B I T Marks 0)),
+    pd_number_base Name Base, !, pd_numbered B I Base (pd_multiple Base => pd_family B I => G).
+pd_rec_scope B I T Marks G :- pd_family B I => G.
+type pd_multiple (string -> o).
+type pd_family (nat -> nat -> o).
+type pd_number_base (string -> string -> o).
+pd_number_base Name Base :- rev Name [] (D :: _), (D == '9'; p_digit_next D _), !, e_u_append Name "_" Base.
+pd_number_base Name Name.
+type pd_numbered (nat -> nat -> string -> o -> o).
+pd_numbered B I "H" G :- p_family_stem B I Family, !, e_u_append "IH" Family Stem, pd_reserve_pair Stem G.
+pd_numbered B I Base G :- e_u_append "IH" Base IH, pd_reserve_pair Base (pd_reserve_pair IH G).
+type pd_reserve_pair (string -> o -> o).
+pd_reserve_pair Base G :- e_u_append Base "0" Zero, (p_pending_name Base => p_pending_name Zero => G).
+type pd_head (nat -> nat -> tm -> list tm -> o).
+pd_head B I D Args :- spine D H Args, e_absent (flex H), H = ind Block Index _,
+    p_known_id Block, p_known_id Index, B = Block, I = Index.
+type pd_two_direct (nat -> nat -> tm -> list mark -> nat -> o).
+pd_two_direct B I T Marks (s (s N)) :- !.
+pd_two_direct B I T (M :: Marks) Count :- whnf T (prod D Body),
+    (M == rec, pd_head B I D _, !, Next = s Count; Next = Count),
+    pi x\ var_type x D => pd_two_direct B I (Body x) Marks Next.
+type pd_rec_label (mark -> tm -> pfhint -> string -> o).
+pd_rec_label rec D Hint Base :- pd_family B I, pd_head B I D _,
+    pd_replacing Y, p_live Name X, X == Y, !, (pd_multiple Stem, e_absent (Stem == "H"), !, Base = Stem; Base = Name).
+pd_rec_label rec D Hint Base :- pd_ind_scheme _ _ _, pd_family B I, pd_head B I D _, !,
+    pd_head_name D Base.
+pd_rec_label _ D (p_field_hint Name _) Base :- Name = _ :: _, !, Base = Name.
+pd_rec_label _ D _ Base :- pd_prop_branch, !, p_base_name "" D Base.
+pd_rec_label _ D (p_field_hint _ Label) Base :- Label = _ :: _, !, pd_initial Label Base.
+pd_rec_label _ D _ Base :- pd_head_name D Base.
+type pd_prop_branch o.
+type pd_branch_scope (nat -> nat -> list lvl -> o -> o).
+% ind_type checks the universe instance and may record obligations. A name
+% needs only the answer; discard the recording as well as all substitutions.
+pd_branch_scope B I UV G :- e_absent (e_absent (ind_type B I UV T, pd_result_sort T prop)), !, (pd_prop_branch => G).
+pd_branch_scope B I UV G :- G.
+type pd_result_sort (tm -> tm -> o).
+pd_result_sort (prod _ Body) S :- !, pi x\ pd_result_sort (Body x) S.
+pd_result_sort T T.
+type pd_head_name (tm -> string -> o).
+pd_head_name A "y" :- flex A, !.
+pd_head_name (prod D Body) Stem :- !, pi x\ (pd_bound x => pd_head_name (Body x) Stem).
+pd_head_name (lam D Body) Stem :- !, pi x\ (pd_bound x => pd_head_name (Body x) Stem).
+pd_head_name (letin V D Body) Stem :- !, pi x\ (pd_bound x => pd_head_name (Body x) Stem).
+pd_head_name (app F X) Stem :- !, pd_head_name F Stem.
+pd_head_name (cast F D) Stem :- !, pd_head_name F Stem.
+pd_head_name (ind B I UV) Stem :- p_known_id B, p_known_id I, p_family_stem B I Name, !, pd_initial Name Stem.
+pd_head_name A Stem :- p_syntax_head A Key, p_head_spelling Key Label, !, pd_initial Label Stem.
+type pd_field_spelling (tm -> string -> o).
+pd_head_name A Stem :- pd_field_spelling X Name, X == A, !, pd_initial Name Stem.
+pd_head_name A Stem :- p_live Name X, X == A, !, pd_initial Name Stem.
+pd_head_name A "p" :- pd_bound X, X == A, !.
+pd_head_name prop "P" :- !.
+pd_head_name (typ L) "S" :- L == lz, !.
+pd_head_name (typ _) "T" :- !.
+pd_head_name A "y".
+type pd_bound (tm -> o).
+type pd_initial (string -> string -> o).
+pd_initial Name Stem :- pd_letter_initial Name Stem, !.
+pd_initial Name "x".
+type pd_letter_initial (string -> string -> o).
+pd_letter_initial (C :: _) (D :: []) :- pd_lower C "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz" D, !.
+pd_letter_initial (C :: _) (C :: []) :- e_member C "abcdefghijklmnopqrstuvwxyz", !.
+pd_letter_initial (C :: Cs) (C :: Rest) :- pd_letter_initial Cs Rest.
+type pd_lower (char -> string -> string -> char -> o).
+pd_lower C (C :: _) (D :: _) D :- !.
+pd_lower C (_ :: Cs) (_ :: Ds) D :- pd_lower C Cs Ds D.
+p_reusing X :- pd_allowed X.
+% The arguments of a constructor are shown where the variable that the match
+% replaces stood (pd_replacing), as Rocq puts them there.
+type pd_replacing (tm -> o).
+type pd_place (tm -> raw -> raw -> o).
+pd_place X T (p_note (pn_place X Y) T) :- pd_replacing Y, !.
+pd_place X T T.
+
+% `destruct x` and `induction x` on a hypothesis x replace it, as in Rocq: x
+% is gone for the rest of the proof, and so is an index of its type that is a
+% hypothesis of its own. The hypotheses whose types mention what is gone are
+% dependents: the goal is generalized over them (pd_generalize), each branch
+% introduces them again under their names (pd_reintro), with their types
+% about the constructor of the branch, and the match is applied to the old
+% ones. A local definition whose type or body mentions what is gone is a
+% dependent too: the goal is generalized over it as a `let`, and each branch
+% has it again as a local definition, with its body about the constructor. A
+% scrutinee that is no hypothesis replaces nothing.
+pd_among Y Seen :- e_member Z Seen, Z == Y.
+% The live hypotheses with their types, the oldest first.
+pd_hyps Seen Acc All :- p_live Name Y, e_absent (pd_among Y Seen), !,
+    p_local_type Y T, pd_hyps (Y :: Seen) (pd_dep Name Y T :: Acc) All.
+pd_hyps Seen All All.
+pd_gone T Params Indices Gone :- p_live Name Y, Y == T, e_absent (var_body T V), !,
+    pd_index_vars Indices Indices Params (T :: []) Gone.
+pd_gone T Params Indices [].
+% An index goes with the scrutinee when it is a hypothesis that no parameter
+% and no other index mentions: the match replaces it by the index of each
+% constructor.
+pd_index_vars [] All Params Gone Gone.
+pd_index_vars (V :: Vs) All Params Acc Gone :-
+    p_live Name Y, Y == V, e_absent (var_body V Body), e_absent (pd_among V Acc),
+    e_absent (e_member W Params, p_mentions W V),
+    e_absent (e_member W All, e_absent (W == V), p_mentions W V), !,
+    pd_index_vars Vs All Params (V :: Acc) Gone.
+pd_index_vars (V :: Vs) All Params Acc Gone :- pd_index_vars Vs All Params Acc Gone.
+% A conversion may have moved an older hypothesis after a younger one.
+% Take only a hypothesis whose prerequisites are already outside Pending.
+pd_order [] [] :- !.
+pd_order Hs (D :: Ds) :- pd_ready Hs Hs D Rest, !, pd_order Rest Ds.
+pd_ready (D :: Ds) Pending D Ds :-
+    e_absent (e_member (pd_dep Name X T) Pending, pd_dependency D X), !.
+pd_ready (H :: Hs) Pending D (H :: Rest) :- pd_ready Hs Pending D Rest.
+pd_dependency (pd_dep Name Y T) X :- p_mentions T X.
+pd_dependency (pd_dep Name Y T) X :- var_body Y V, p_mentions V X.
+pd_dependents [] Gone [] :- !.
+pd_dependents (pd_dep Name Y T :: Hs) Gone Ds :- pd_among Y Gone, !, pd_dependents Hs Gone Ds.
+pd_dependents (H :: Hs) Gone (D :: Ds) :-
+    H = pd_dep Name Y T, e_member X Gone, pd_dependency H X, !,
+    pd_description Name Y T D, pd_dependents Hs (Y :: Gone) Ds.
+pd_dependents (H :: Hs) Gone Ds :- pd_dependents Hs Gone Ds.
+type pd_description (string -> tm -> tm -> pddep -> o).
+pd_description Name Y T (pd_def Name Y T V) :- var_body Y V, !.
+pd_description Name Y T (pd_dep Name Y T).
+pd_replaced [] A [] :- !.
+pd_replaced Gone A Deps :- pd_hyps [] [] Hyps, pd_current_order Hyps Sorted, pd_dependents Sorted Gone Deps.
+type pd_current_order (list pddep -> list pddep -> o).
+pd_current_order Hyps Sorted :- p_retyped, !, pd_order Hyps Sorted.
+pd_current_order Hyps Hyps.
+pd_generalize [] A A.
+pd_generalize (pd_dep Name Y T :: Ds) A (prod T B) :-
+    pi y\ (pd_moved Ds Y y (Es y), e_copy A (Y :: []) (y :: []) (C y), pd_generalize (Es y) (C y) (B y)).
+pd_generalize (pd_def Name Y T V :: Ds) A (letin V T B) :-
+    pi y\ (pd_moved Ds Y y (Es y), e_copy A (Y :: []) (y :: []) (C y), pd_generalize (Es y) (C y) (B y)).
+pd_moved [] Y Z [].
+pd_moved (pd_def Name W T V :: Ds) Y Z (pd_def Name W U X :: Es) :-
+    e_copy T (Y :: []) (Z :: []) U, e_copy V (Y :: []) (Z :: []) X, pd_moved Ds Y Z Es.
+pd_moved (pd_dep Name W T :: Ds) Y Z (pd_dep Name W U :: Es) :- e_copy T (Y :: []) (Z :: []) U, pd_moved Ds Y Z Es.
+pd_reintro [] Rest Rest.
+pd_reintro (pd_dep Name Y T :: Ds) Rest (r_untyped Body) :-
+    pi y\ (pd_reintro Ds Rest (Inner y),
+        Body y = p_named Name y (p_note (pn_clear Y) (p_note (pn_replace y Y) (Inner y)))).
+pd_reintro (pd_def Name Y T V :: Ds) Rest (r_open Body) :-
+    pi y\ (pd_reintro Ds Rest (Inner y),
+        Body y = p_named Name y (p_note (pn_clear Y) (p_note (pn_replace y Y) (Inner y)))).
+pd_clear [] R R.
+pd_clear (X :: Xs) R (p_note (pn_clear X) S) :- pd_clear Xs R S.
+% What a branch has after the arguments of its constructor: the dependents
+% again, and then what is gone is gone.
+pd_rest Gone Deps A R :- p_hints A Hs, p_keep_hints Hs (r_blank 0) Leaf, pd_clear Gone Leaf Cleared, pd_reintro Deps Cleared R.
+pd_dep_refs [] [].
+pd_dep_refs (pd_dep Name Y T :: Ds) (r_ref Y [] :: Rs) :- pd_dep_refs Ds Rs.
+pd_dep_refs (pd_def Name Y T V :: Ds) Rs :- pd_dep_refs Ds Rs.
+pd_applied R [] R :- !.
+pd_applied R Args (r_apps R Args).
+pd_append_raw [] Ys Ys.
+pd_append_raw (X :: Xs) Ys (X :: Zs) :- pd_append_raw Xs Ys Zs.
+% The names that `as` gives are new, except that one may be the name of what
+% the match replaces (`destruct n as [|n]` in Rocq).
+% Each constructor has its own scope. Check only the offered prefix that
+% this branch consumed, including names explicitly supplied for its IHs.
+pd_new_names Names Rest :- Names == Rest, !.
+pd_new_names (Name :: Names) Rest :-
+    e_need (pd_new_name Name Names Rest) "P-NameUsed" [], pd_new_names Names Rest.
+type pd_prefix_member (string -> list string -> list string -> o).
+pd_prefix_member Name Names Rest :- Names == Rest, !, fail.
+pd_prefix_member Name (Name :: Names) Rest.
+pd_prefix_member Name (Other :: Names) Rest :- pd_prefix_member Name Names Rest.
+pd_new_name [] Names Rest :- !.
+pd_new_name Name Names Rest :- e_absent (pd_prefix_member Name Names Rest), e_absent (p_live Name X, e_absent (pd_allowed X)).
+pd_ihs [] Template R :- e_fresh Template R.
+pd_ihs (pd_ih Given Name Place T A :: Is) R (r_cut (r_ref A []) (r_ref T []) Body) :-
+    pi x\ (var_type x A =>
+        (pd_ihs Is R (Rest x), pd_place_ih Place x (Rest x) (Local x), pd_ih_name Given Name x (Local x) (Body x))).
+type pd_place_ih (list tm -> tm -> raw -> raw -> o).
+pd_place_ih [] X R R.
+pd_place_ih (Field :: []) X R (p_note (pn_place X Field) R).
+type pd_ih_name (string -> string -> tm -> raw -> raw -> o).
+pd_ih_name "" Name X R (p_named Name X (p_note (pn_auto X "IH") R)) :- !.
+pd_ih_name Given Name X R (p_named Name X R).
+
+pd_scrutinee Template R T TT B I UV N Params Indices Marks :-
+    e_fresh Template R, (p_phase p_passive => e_in R T TT),
+    e_need (e_done T, e_done TT) "P-EliminationUnsolved" [],
+    whnf TT W, spine W Head Args,
+    e_need (match_head Head B I UV, ind_info B I UV N E Marks) "P-EliminationFamily" (TT :: []),
+    split N Args Params Indices.
+
+p_tactic (p_destruct Template Names) A R :-
+    pd_scrutinee Template Raw T TT B I UV N Params Indices Marks,
+    pd_gone T Params Indices Gone,
+    pd_destruct Gone Raw T B I UV Params Indices Marks Names A R.
+type pd_destruct (list tm -> raw -> tm -> nat -> nat -> list lvl -> list tm -> list tm -> list (list mark) -> list string -> tm -> raw -> o).
+pd_destruct [] Raw T B I UV Params Indices Marks Names A (r_match Raw rf_any rr_none Branches) :- !,
+    p_hints A Hs, p_keep_hints Hs (r_blank 0) Leaf, (pd_template Leaf => pd_branches B I UV 0 Params Marks Names Rest Branches),
+    e_need (Rest = []) "P-EliminationNames" [].
+pd_destruct Gone Raw T B I UV Params Indices Marks Names A R :-
+    pd_replaced Gone A Deps, pd_generalize Deps A Gen,
+    apps (ind B I UV) Params F, ind_type B I UV FamilyType, inst FamilyType Params AT,
+    rev Indices [] Reverse, e_abstract AT F (T :: Reverse) [] Gen Motive, pd_motive_raw Motive Return,
+    pd_rest Gone Deps A Template,
+    (pd_template Template => (pi x\ (pd_allowed x :- pd_among x Gone)) => pd_replacing T => pd_branches B I UV 0 Params Marks Names Rest Branches),
+    e_need (Rest = []) "P-EliminationNames" [],
+    pd_dep_refs Deps Args,
+    pd_applied (r_match (r_ref T []) (rf_named B I) (rr_some Return) Branches) Args R.
+type pd_template (raw -> o).
+pd_branches B I UV J Params [] Names Names [].
+pd_branches B I UV J Params (M :: Marks) Names Rest (rb_named B I J Raw :: Branches) :-
+    con_type B I J UV CT, inst CT Params T,
+    pd_field_hints B I J Hints, pd_branch_scope B I UV (pd_rec_scope B I T M (pd_branch T M Hints Names Next [] Raw)), pd_new_names Names Next,
+    pd_branches B I UV (s J) Params Marks Next Rest Branches.
+pd_branch T (Mark :: Marks) Hints Names Rest Locals (r_abs Body) :- whnf T (prod D B), !,
+    pd_take_field Hints Hint More, pd_rec_label Mark D Hint Base, pd_hint Names "" Given Next, pd_field_label Given Base D Name,
+    pi x\ var_type x D => pd_field_spelling x Name => p_pending_name Name =>
+        pd_branch (B x) Marks More Next Rest (pd_name Given Name x :: Locals) (Body x).
+pd_branch T [] Hints Names Names Locals R :-
+    pd_template Template, e_fresh Template Hole, rev Locals [] Ordered, pd_names Ordered Hole R.
+
+% A recursive call can change a suffix of the declared parameters. Only
+% their common prefix stays fixed in the induction predicate. Inspect
+% constructor telescopes with fresh formal parameters rather than the
+% particular instance supplied by this proof.
+type pd_uniform (nat -> nat -> list lvl -> nat -> nat -> list (list mark) -> nat -> nat -> o).
+pd_uniform B I UV J N Marks 0 0 :- !.
+pd_uniform B I UV J N [] Count Count.
+pd_uniform B I UV J N (Fields :: More) Count Result :-
+    con_type B I J UV T, pd_formals B I N T [] Fields Count Next,
+    pd_uniform B I UV (s J) N More Next Result.
+type pd_formals (nat -> nat -> nat -> tm -> list tm -> list mark -> nat -> nat -> o).
+pd_formals B I 0 T Reverse Fields Count Result :- !,
+    rev Reverse [] Params, pd_uniform_fields B I T Params Fields Count Result.
+pd_formals B I (s N) T Reverse Fields Count Result :- whnf T (prod D Body),
+    pi x\ var_type x D => pd_formals B I N (Body x) (x :: Reverse) Fields Count Result.
+type pd_uniform_fields (nat -> nat -> tm -> list tm -> list mark -> nat -> nat -> o).
+pd_uniform_fields B I T Params [] Count Count.
+pd_uniform_fields B I T Params (Mark :: More) Count Result :- whnf T (prod D Body),
+    pd_field_prefix Mark B I D Params Count Next,
+    pi x\ var_type x D => pd_uniform_fields B I (Body x) Params More Next Result.
+type pd_field_prefix (mark -> nat -> nat -> tm -> list tm -> nat -> nat -> o).
+pd_field_prefix rec B I T Params Count Next :- whnf T (prod D Body), !,
+    pi x\ var_type x D => pd_field_prefix rec B I (Body x) Params Count Next.
+pd_field_prefix rec B I T Params Count Next :- whnf T W, pd_head B I W Args, !,
+    pd_prefix Params Args Count Next.
+pd_field_prefix Mark B I T Params Count Count.
+type pd_prefix (list tm -> list tm -> nat -> nat -> o).
+pd_prefix (X :: Xs) (Y :: Ys) (s N) (s K) :- pd_same_param X Y, !, pd_prefix Xs Ys N K.
+type pd_same_param (tm -> tm -> o).
+pd_same_param X Y :- X == Y, !.
+pd_same_param X Y :- e_absent (e_absent (conv X Y)).
+pd_prefix Xs Ys N 0.
+
+p_tactic (p_induction Template Names) A (r_apps Fix Arguments) :-
+    pd_scrutinee Template R T TT B I UV N Params Indices Marks,
+    pd_uniform B I UV 0 N Marks N K, split K Params Fixed Vary, pd_append Vary Indices General,
+    pd_gone T Fixed General Gone,
+    pd_replaced Gone A Deps, pd_generalize Deps A Gen,
+    apps (ind B I UV) Fixed F, ind_type B I UV FamilyType, inst FamilyType Fixed AT,
+    rev General [] Reverse, e_abstract AT F (T :: Reverse) [] Gen Motive,
+    pd_function_type AT F Motive FunctionType Position,
+    Fix = r_fix 0 (r_fixed Position :: []) (r_ref FunctionType [] :: []) Bodies [],
+    pd_rest Gone Deps A Rest0,
+    (pi f\ var_type (f 0) FunctionType =>
+        ((pd_template Rest0 => pd_ind_scheme K Fixed Motive => pd_induction_place Gone T
+            (pd_param_body Vary Fixed AT F Motive (f 0) B I UV N Marks Names Rest (Body f))),
+        e_need (Rest = []) "P-EliminationNames" [], Bodies f = Body f :: [])),
+    pd_append General (T :: []) Values, pd_refs Values Scrutinee,
+    pd_dep_refs Deps Dependents, pd_append_raw Scrutinee Dependents Arguments.
+% The match abstracts actual indices only. Its enclosing fixpoint also
+% abstracts varying parameters, so its recursive calls can change them.
+type pd_ind_scheme (nat -> list tm -> tm -> o).
+type pd_param_body (list tm -> list tm -> tm -> tm -> tm -> tm -> nat -> nat -> list lvl -> nat -> list (list mark) -> list string -> list string -> raw -> o).
+pd_param_body [] Params AT F P Function B I UV N Marks Names Rest Body :-
+    pd_body AT F P Function B I UV N Params Marks Names Rest Body.
+pd_param_body (Old :: More) Params AT F (abs P) Function B I UV N Marks Names Rest (r_lam (r_ref D []) Body) :-
+    whnf AT (prod D Codomain), pd_param_name B I Params Old D Name,
+    pi x\ var_type x D => p_pending_name Name => (pd_append Params (x :: []) (Full x),
+        pd_param_body More (Full x) (Codomain x) (app F x) (P x) Function B I UV N Marks Names Rest (Inner x),
+        Body x = p_named Name x (Inner x)).
+type p_parameter_names (nat -> nat -> list string -> o).
+type pd_param_name (nat -> nat -> list tm -> tm -> tm -> string -> o).
+pd_param_name B I Params Old D Name :- pd_allowed Old, p_live Hint X, X == Old, !, p_choose_name Hint D Name.
+pd_param_name B I Params Old D Name :- e_length K Params, p_parameter_names B I Hs, nth K Hs Hint, !,
+    p_choose_name Hint D Name.
+pd_param_name B I Params Old D Name :- p_choose_name "" D Name.
+type pd_induction_place (list tm -> tm -> o -> o).
+pd_induction_place [] T G :- !, G.
+pd_induction_place Gone T G :- (pi x\ (pd_allowed x :- pd_among x Gone)) => pd_replacing T => G.
+pd_refs [] [].
+pd_refs (T :: Ts) (r_ref T [] :: Rs) :- pd_refs Ts Rs.
+
+pd_function_type AT F (abs P) (prod D Body) (s Position) :-
+    whnf AT (prod D B), !,
+    pi x\ var_type x D => pd_function_type (B x) (app F x) (P x) (Body x) Position.
+pd_function_type AT F (abs P) (prod F P) 0.
+pd_motive_raw (abs P) (r_abs R) :- !, pi x\ pd_motive_raw (P x) (R x).
+pd_motive_raw A (r_ref A []).
+
+pd_body AT F P Function B I UV N Params Marks Names Rest (r_lam (r_ref D []) Body) :-
+    whnf AT (prod D Codomain), !,
+    pi x\ var_type x D =>
+        pd_body (Codomain x) (app F x) P Function B I UV N Params Marks Names Rest (Body x).
+pd_body AT F P Function B I UV N Params Marks Names Rest (r_lam (r_ref F []) Body) :-
+    pd_motive_raw P Return,
+    pi x\ var_type x F =>
+        (pd_ind_branches B I UV 0 N Params P Function Marks Names Rest Branches,
+        Body x = r_match (r_ref x []) (rf_named B I) (rr_some Return) Branches).
+
+pd_ind_branches B I UV J N Params P Function [] Names Names [].
+pd_ind_branches B I UV J N Params P Function (M :: Marks) Names Rest (rb_named B I J Raw :: Branches) :-
+    con_type B I J UV CT, inst CT Params T,
+    pd_ind_hints B I J Hints, pd_branch_scope B I UV (pd_rec_scope B I T M (pd_ind_branch B I UV N Params P Function T Hints M Names Next [] [] Raw)), pd_new_names Names Next,
+    pd_ind_branches B I UV (s J) N Params P Function Marks Next Rest Branches.
+pd_ind_branch B I UV N Params P Function T Hints (Mark :: Marks) Names Rest Locals IHs (r_abs Body) :-
+    whnf T (prod D Codomain), !, pd_take_field Hints Hint More, pd_rec_label Mark D Hint Base,
+    pd_hint Names "" Given Next, pd_field_label Given Base D Name,
+    pi x\ var_type x D => pd_field_spelling x Name => p_pending_name Name =>
+        (pd_ind_field Mark Name B I UV N Params P Function x D Next After IHs (NewIHs x) IHName,
+        (p_pending_name IHName => pd_ind_branch B I UV N Params P Function (Codomain x) More Marks After Rest
+            (pd_name Given Name x :: Locals) (NewIHs x) (Body x))).
+pd_ind_branch B I UV N Params P Function T Hints [] Names Names Locals IHs R :-
+    pd_template Template, rev IHs [] OrderedIHs, pd_ihs OrderedIHs Template WithIHs,
+    rev Locals [] OrderedNames, pd_names OrderedNames WithIHs R.
+% A functional IH follows its own field in the local context. Direct IHs
+% come after the constructor fields, in constructor order.
+type pd_ih_position (tm -> tm -> list tm -> o).
+pd_ih_position X D (X :: []) :- e_absent (e_absent (whnf D (prod _ _))), !.
+pd_ih_position X D [].
+pd_ind_field nonrec Field B I UV N Params P Function X D Names Names IHs IHs "".
+% Rocq's single-family induction principle omits IHs for siblings of a
+% mutual family. They remain ordinary constructor fields in this branch.
+pd_ind_field rec Field B I UV N Params P Function X D Names Names IHs IHs "" :-
+    pd_sibling B I D, !.
+type pd_sibling (nat -> nat -> tm -> o).
+pd_sibling B I D :- whnf D (prod A Body), !, pi x\ var_type x A => pd_sibling B I (Body x).
+pd_sibling B I D :- whnf D W, pd_head B J W _, e_absent (I == J).
+pd_ind_field rec Field B I UV N Params P Function X D Names Rest IHs (IH :: IHs) Name :-
+    pd_ih_position X D Place, IH = pd_ih Given Name Place Term Type,
+    pd_hint Names "" Given Rest, pd_ih_stem B I D Field Stem, pd_field_label Given Stem D Name,
+    pd_ih_term B I UV N Params P Function X D Term Type.
+type pd_ih_stem (nat -> nat -> tm -> string -> string -> o).
+pd_ih_stem B I D Field "H" :- e_absent (flex D), D = prod _ _, !.
+pd_ih_stem B I D Field Stem :- pd_replacing Y, p_live Name X, X == Y,
+    p_name_root Name "H", p_family_stem B I Family, !, e_u_append "IH" Family Stem.
+pd_ih_stem B I D Field Stem :- pd_multiple Base, !, e_u_append "IH" Base Stem.
+pd_ih_stem B I D Field Stem :- e_u_append "IH" Field Stem.
+type p_ind_field_names (nat -> nat -> nat -> list pfhint -> o).
+type pd_ind_hints (nat -> nat -> nat -> list pfhint -> o).
+pd_ind_hints B I J Hs :- p_ind_field_names B I J Hs, !.
+pd_ind_hints B I J Hs :- pd_field_hints B I J Hs.
+pd_ih_term B I UV N Params P Function X D Term Type :-
+    whnf D W, pd_ih_head B I UV N Params P Function X W Term Type.
+pd_ih_head B I UV N Params P Function X (prod D Codomain) (lam D Body) (prod D Type) :- !,
+    pi y\ var_type y D =>
+        pd_ih_term B I UV N Params P Function (app X y) (Codomain y) (Body y) (Type y).
+pd_ih_head B I UV N Params P Function X D Term Type :-
+    spine D Head Args,
+    e_need (match_head Head B I UV) "P-InductionFamily" (D :: []),
+    pd_ind_scheme K Fixed FullMotive, split K Args Actual Indices,
+    e_need (params Actual Fixed, conv_all Actual Fixed) "P-InductionParameters" [],
+    ret_type FullMotive Indices X Type, pd_append Indices (X :: []) Arguments,
+    apps Function Arguments Term.
+
+% These are proof-term proposals, not context mutation by the host. Fresh
+% body holes are allocated under the new let binder and may use it. The rest
+% of the proof has the variable of the `let` without its value (r_cut), as
+% Rocq gives an assumption for what `assert` and `specialize` prove.
+type p_assert_hinted (string -> raw -> phints -> ptac).
+p_tactic (p_assert Name Type) A R :- p_tactic (p_assert_hinted Name Type p_no_hints) A R.
+p_tactic (p_assert_hinted "" Type Written) A R :- !,
+    e_fresh Type Raw, (p_phase p_passive => e_kind Raw T _), p_choose_name "" T Name,
+    p_tactic (p_assert_hinted Name (r_ref T []) Written) A R.
+p_tactic (p_assert_hinted Name Type Written) A R :-
+    p_new_names (Name :: []), p_hints A Current,
+    p_keep_hints Written (r_blank 0) Premise, p_keep_hints Current (r_blank 0) Rest,
+    (pi x\ p_keep_domain x Written Rest (Local x)),
+    e_fresh (r_cut Type Premise (x\ p_named Name x (Local x))) R.
+% What `specialize` proves replaces the hypothesis that it specializes, which
+% nothing else may depend on (Rocq: "Cannot change H, it is used in ...").
+p_tactic (p_specialize Term) A (r_cut (r_ref T []) Raw Body) :-
+    e_need (pd_specialize_local Term Name X) "P-SpecializeLocal" [],
+    e_fresh Term Raw, (p_phase p_passive => e_in Raw M T),
+    p_unused X A, p_hints A Hs, p_keep_hints Hs (r_blank 0) Rest,
+    pd_specialize_hints M Domain, (pi x\ p_keep_domain x Domain Rest (Local x)),
+    e_fresh (r_untyped (x\ p_named Name x (p_note (pn_clear X) (p_note (pn_replace x X) (Local x))))) (r_untyped Body).
+type pd_specialize_hints (tm -> phints -> o).
+pd_specialize_hints M Hs :- p_argument_hints M Hs, !.
+pd_specialize_hints M p_no_hints.
+pd_specialize_local (r_at P R) Name X :- !, pd_specialize_local R Name X.
+pd_specialize_local (r_apps R Args) Name X :- !, pd_specialize_local R Name X.
+pd_specialize_local (p_resolve Name Fallback) Result X :- e_proof_resolve Name Fallback R, pd_specialize_local R Result X.
+pd_specialize_local (r_ref X Modes) Name X :- p_live Name Y, X == Y, !.
+p_tactic p_exfalso A
+    (r_match (r_hole 0 Request H (ind B I UV)) (rf_named B I) rr_none []) :-
+    ind_info B I UV 0 Elimination [], ind_type B I UV Type, whnf Type prop.
+
+type pd_take_field (list pfhint -> pfhint -> list pfhint -> o).
+pd_take_field [] (p_field_hint "" "") [].
+pd_take_field (Hint :: Rest) Hint Rest.

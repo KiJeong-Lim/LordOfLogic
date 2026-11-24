@@ -1,0 +1,792 @@
+% Equality and conversion tactics propose raw terms. The ordinary elaborator
+% and the independent ground kernel check every proposal.
+import lol.hol.proof.
+
+kind pe_target type.
+type pe_goal pe_target.
+type pe_hyp (string -> raw -> pe_target).
+kind pe_direction type.
+type pe_forward pe_direction.
+type pe_backward pe_direction.
+type p_symmetry ptac.
+type p_transitivity (raw -> ptac).
+type p_rewrite (pe_direction -> raw -> pe_target -> ptac).
+type p_unfold (list raw -> pe_target -> ptac).
+type p_simpl (pe_target -> ptac).
+type p_change (raw -> pe_target -> ptac).
+type p_change_hinted (raw -> pe_target -> phints -> ptac).
+type pe_names (phints -> o).
+type pe_new_names (tm -> tm -> phints -> o).
+pe_new_names Old New Hs :- pe_names Hs, !.
+pe_new_names Old New Hs :- p_hints Old Written, pe_reduced_names Old New Written Hs.
+% A removed let consumes its own name. Keep each following product and its
+% domain aligned with the surviving binder, even inside another product.
+type pe_reduced_names (tm -> tm -> phints -> phints -> o).
+pe_reduced_names Old New p_no_hints p_no_hints :- !.
+pe_reduced_names Old New Hs Hs :- (flex Old; flex New; Old == New), !.
+pe_reduced_names (cast T _) New Hs Out :- !, pe_reduced_names T New Hs Out.
+pe_reduced_names (letin V T Body) New (p_binding _ _ Rest) Out :- !, pe_reduced_names (Body V) New Rest Out.
+pe_reduced_names (prod A F) (prod B G) (p_binding Name D Rest) (p_binding Name E Tail) :- !,
+    pe_reduced_names A B D E, pi x\ pe_reduced_names (F x) (G x) Rest Tail.
+pe_reduced_names Old New Hs Hs.
+
+type pe_last (list tm -> list tm -> tm -> o).
+type pe_eq (tm -> nat -> nat -> list lvl -> list tm -> tm -> tm -> tm -> o).
+type pe_type (nat -> nat -> list lvl -> list tm -> tm -> tm -> tm -> o).
+type pe_refl (nat -> nat -> list lvl -> list tm -> tm -> tm -> o).
+type pe_reverse (tm -> tm -> tm -> tm -> o).
+type pe_orient (pe_direction -> tm -> tm -> tm -> tm -> o).
+type pe_input (raw -> tm -> tm -> o).
+type pe_focus (pe_target -> tm -> tm -> tm -> o).
+type pe_changed (pe_target -> tm -> tm -> tm -> tm -> raw -> o).
+type pe_convert (pe_target -> tm -> tm -> tm -> tm -> raw -> o).
+type pe_change (pe_target -> tm -> tm -> tm -> raw -> o).
+type pe_rewrite (pe_direction -> raw -> pe_target -> tm -> raw -> o).
+type pe_rewrite_goal (tm -> tm -> tm -> tm -> raw -> o).
+type pe_rewrite_hyp (string -> tm -> tm -> tm -> tm -> tm -> raw -> o).
+type pe_motive (tm -> tm -> (tm -> tm) -> o).
+type pe_unfold_all (list raw -> tm -> tm -> o).
+type pe_body (tm -> tm -> o).
+
+pe_last (X :: []) [] X :- !.
+pe_last (X :: Xs) (X :: Ys) Last :- pe_last Xs Ys Last.
+pe_type B I UV Prefix Left Right Result :-
+    apps (ind B I UV) Prefix Head, Result = app (app Head Left) Right.
+pe_refl B I UV Prefix Left Result :-
+    apps (con B I 0 UV) Prefix Head, Result = app Head Left.
+
+% Recognize a reflexive equality family by admitted structure, never by its
+% name or block number. Its only constructor has no fields after parameters,
+% and its only index repeats its last parameter.
+pe_eq A B I UV Prefix Left Right Carrier :-
+    whnf A W, spine W (ind B I UV) Args,
+    ind_info B I UV Count Elimination ([] :: []),
+    split Count Args Params (Right :: []), pe_last Params Prefix Left,
+    e_done Left, e_done Right, infer Left Carrier,
+    con_type B I 0 UV CT, inst CT Params Result,
+    whnf Result CW, spine CW (ind B I UV) CArgs,
+    split Count CArgs CParams (Index :: []), conv Left Index.
+
+pe_input Template M A :- e_fresh Template R,
+    (p_phase p_passive => e_in R M A), e_done M, e_done A.
+
+% Closed symmetry proof, also used to orient a backwards rewrite.
+pe_reverse E T S ST :-
+    pe_eq T B I UV Prefix Left Right Carrier,
+    apps (ind B I UV) Prefix Head, F = app Head Left,
+    pe_refl B I UV Prefix Left Refl,
+    S = cas F (abs (y\ abs (e\ app (app Head y) Left))) E (Refl :: []),
+    pe_type B I UV Prefix Right Left ST, check S ST.
+pe_orient pe_forward E T E T :- !.
+pe_orient pe_backward E T S ST :- pe_reverse E T S ST.
+
+p_tactic p_symmetry A
+    (r_match (r_hole 0 Request H Reverse) (rf_named B I)
+        (rr_some (r_abs (y\ r_abs (e\ r_ref (app (app Head y) Right) []))))
+        (rb_named B I 0 (r_ref Refl []) :: [])) :-
+    pe_eq A B I UV Prefix Left Right Carrier,
+    apps (ind B I UV) Prefix Head,
+    pe_type B I UV Prefix Right Left Reverse, pe_refl B I UV Prefix Right Refl.
+
+p_tactic (p_transitivity Template) A
+    (r_let (r_ref First []) (r_hole 0 Req1 H1 First)
+        (proof1\ r_match (r_hole 0 Req2 H2 Second) (rf_named B I)
+            (rr_some (r_abs (y\ r_abs (e\ r_ref (app (app Head Left) y) []))))
+            (rb_named B I 0 (r_ref proof1 []) :: []))) :-
+    pe_eq A B I UV Prefix Left Right Carrier,
+    e_fresh Template Raw, (p_phase p_passive => e_out Raw Carrier Middle), e_done Middle,
+    apps (ind B I UV) Prefix Head,
+    pe_type B I UV Prefix Left Middle First, pe_type B I UV Prefix Middle Right Second.
+
+% A hypothesis target must denote a named local value. The source spelling
+% is kept for the new let-bound local; its old identity is never overwritten.
+% The rest of the proof has the new local without its value (r_cut): what a
+% tactic makes of a hypothesis is an assumption in Rocq. The new local
+% replaces the old one, which is gone for the rest (Rocq clears it, and
+% refuses when something else depends on it). A conversion of a hypothesis
+% makes no new local: the same variable gets the new type, and the term of
+% the proof stays as it is (Rocq: convert_hyp).
+pe_focus pe_goal Goal Goal prop :- !.
+pe_focus (pe_hyp Name Template) Goal T X :-
+    pe_input Template X T, p_live Any X, !.
+pe_changed pe_goal Goal New X Proof (r_apps (r_ref Proof []) (Leaf :: [])) :- !,
+    p_hints Goal Hs, p_keep_hints Hs (r_hole 0 Request H New) Leaf.
+pe_changed (pe_hyp Name Template) Goal New X Proof R :-
+    p_unused X Goal, p_live Original Source, Source == X, p_hints Goal Hs, p_keep_hints Hs (r_blank 0) Leaf,
+    e_fresh (r_cut (r_ref New []) (r_ref Proof [])
+        (fresh\ p_named Original fresh (p_note (pn_clear X) (p_note (pn_replace fresh X) Leaf)))) R.
+% A tactic that reduces the goal casts the proof of the new goal to the goal
+% that it changed, and `change` leaves no cast, as in Rocq (`reduct_in_concl`
+% and `change_in_concl`).
+pe_convert pe_goal Goal New X X (r_annot Leaf (r_ref Goal [])) :- !, conv Goal New,
+    pe_new_names Goal New Hs, p_keep_hints Hs (r_hole 0 Request H New) Leaf.
+pe_change pe_goal Goal New X Leaf :- !, pe_new_names Goal New Hs, p_keep_hints Hs (r_hole 0 Request H New) Leaf.
+pe_change Target Goal New X R :- pe_convert Target Goal New X X R.
+pe_convert (pe_hyp Name Template) Goal New X X R :-
+    infer X Old, conv Old New, e_need (e_absent (p_reaches (New :: []) X [])) "P-ContextCycle" [], p_hints Goal Hs,
+    p_keep_hints Hs (r_blank 0) Leaf, pe_hyp_names X Old New Leaf Noted, e_fresh (p_note (pn_retype X New) Noted) R.
+type pe_hyp_names (tm -> tm -> tm -> raw -> raw -> o).
+pe_hyp_names X Old New Leaf (p_note (pn_domain X Hs) Leaf) :- pe_names Hs, !.
+pe_hyp_names X Old New Leaf Noted :- p_domain_names Y Hs, X == Y, !,
+    pe_reduced_names Old New Hs Out, p_keep_domain X Out Leaf Noted.
+pe_hyp_names X Old New Leaf Leaf.
+
+p_tactic (p_change_hinted Template Target Hs) Goal R :- (pe_names Hs => p_tactic (p_change Template Target) Goal R).
+p_tactic (p_change Template Target) Goal R :-
+    pe_focus Target Goal Old X,
+    e_fresh Template Raw, (p_phase p_passive => e_kind Raw New S), e_done New,
+    conv Old New, pe_change Target Goal New X R.
+p_tactic (p_simpl Target) Goal R :-
+    pe_focus Target Goal Old X, ps_simpl Old New,
+    pe_convert Target Goal New X X R.
+
+% ------------------------------------------------------------------------------
+% simpl (Rocq 9.0: pretyping/tacred.ml)
+% ------------------------------------------------------------------------------
+% `simpl` reduces as the `simpl` of Rocq does, and not to a normal form: at
+% the head of every subterm (ps_whd: whd_simpl_stack) it does beta, zeta and
+% casts, a match whose scrutinee simplifies to a constructor, a `fix` whose
+% struct argument does, and it unfolds a constant only when the value of the
+% constant hides such a match or `fix` that then reduces (ps_const:
+% red_elim_const). The recursive calls of a `fix` that came from a constant
+% are written with that constant again (ps_refold: contract_fix). Nothing
+% here is trusted: the kernel checks that the result converts with the goal.
+kind ps_kind type.
+kind ps_fold type.
+% the value of a constant is `fun x1 .. xn => match xi with ... end ...`
+type ps_el_cases (nat -> ps_kind).
+% or `fun x1 .. xn => (fix ...) xi1 .. xip`: the least number of arguments
+% that lets the `fix` reduce, n, and the binder that each argument of the
+% `fix` is, from 0 for x1
+type ps_el_fix (nat -> nat -> list nat -> ps_kind).
+type ps_itself ps_fold.
+type ps_folded (list tm -> ps_fold).
+type ps_simpl (tm -> tm -> o).
+type ps_simpl_all (list tm -> list tm -> o).
+type ps_inside (tm -> tm -> o).
+type ps_whd (tm -> list tm -> tm -> list tm -> o).
+type ps_plain (tm -> list tm -> tm -> list tm -> o).
+type ps_delta (tm -> list tm -> tm -> tm -> list tm -> tm -> o).
+type ps_delta_head (tm -> list tm -> tm -> tm -> list tm -> tm -> o).
+type ps_body (tm -> tm -> o).
+type ps_case (tm -> list tm -> tm -> o).
+type ps_arm (tm -> list tm -> tm -> o).
+type ps_construct (tm -> list tm -> tm -> list tm -> o).
+type ps_construct_head (tm -> list tm -> tm -> list tm -> o).
+type ps_fix (ps_fold -> nat -> list nat -> list tm -> ((nat -> tm) -> list tm) -> list tm -> tm -> list tm -> o).
+type ps_unfolded (ps_fold -> nat -> list nat -> list tm -> ((nat -> tm) -> list tm) -> tm -> o).
+type ps_selectors (nat -> (nat -> tm) -> list tm -> list tm -> o).
+type ps_put (nat -> tm -> list tm -> list tm -> o).
+type ps_const (tm -> list tm -> tm -> list tm -> o).
+type ps_reduce (ps_kind -> tm -> tm -> list tm -> tm -> list tm -> o).
+type ps_elim (tm -> list tm -> list tm -> ps_kind -> o).
+type ps_elim_head (tm -> list tm -> list tm -> list tm -> ps_kind -> o).
+type ps_among (tm -> list tm -> o).
+type ps_index (tm -> list tm -> nat -> nat -> o).
+type ps_reversible (list tm -> list tm -> tm -> list nat -> list nat -> o).
+type ps_independent (list tm -> list tm -> list tm -> o).
+type ps_trigger (nat -> nat -> nat -> nat -> o).
+type ps_less (nat -> nat -> o).
+type ps_minus (nat -> nat -> nat -> o).
+type ps_plus (nat -> nat -> nat -> o).
+type ps_at_least (nat -> list tm -> o).
+type ps_refold (tm -> tm -> nat -> list nat -> list tm -> nat -> list nat -> list tm -> ((nat -> tm) -> list tm) -> ps_fold -> o).
+type ps_types (tm -> list tm -> list tm -> o).
+type ps_types_head (tm -> list tm -> tm -> list tm -> tm -> list tm -> o).
+type ps_wrap (list nat -> list tm -> list tm -> tm -> tm -> o).
+type ps_eta (tm -> tm -> o).
+type ps_block (nat -> nat -> list tm -> tm -> tm -> list nat -> list tm -> ((nat -> tm) -> list tm) -> list tm -> o).
+type ps_mutual (nat -> nat -> o).
+type ps_sibling (tm -> nat -> list nat -> list tm -> ((nat -> tm) -> list tm) -> tm -> o).
+
+% simpl: the head of the term, and then every part of what is left
+ps_simpl T R :- ps_whd T [] H As, ps_inside H H1, ps_simpl_all As As1, apps H1 As1 R.
+ps_simpl_all [] Rs :- !, Rs = [].
+ps_simpl_all (T :: Ts) Rs :- ps_simpl T R, ps_simpl_all Ts Rs1, Rs = R :: Rs1.
+ps_inside H R :- flex H, !, R = H.
+ps_inside (proj B J T) (proj B J V) :- !, ps_simpl T V.
+ps_inside (prod A B) R :- !, ps_simpl A A1, (pi x\ ps_simpl (B x) (B1 x)), R = prod A1 B1.
+ps_inside (lam A F) R :- !, ps_simpl A A1, (pi x\ ps_simpl (F x) (F1 x)), R = lam A1 F1.
+ps_inside (abs F) R :- !, (pi x\ ps_simpl (F x) (F1 x)), R = abs F1.
+ps_inside (cas F P T Cs) R :- !,
+    ps_simpl F F1, ps_simpl P P1, ps_simpl T T1, ps_simpl_all Cs Cs1, R = cas F1 P1 T1 Cs1.
+ps_inside (fix K Ns Fs Ts) R :- !,
+    ps_simpl_all Fs Fs1, (pi f\ ps_simpl_all (Ts f) (Ts1 f)), R = fix K Ns Fs1 Ts1.
+ps_inside H H.
+
+% A named selector matches the complete application, once per head. Rocq
+% numbers matches before their arguments, from left to right. Explicit sites
+% must exist, and two selected sites may not overlap.
+kind ps_sites type.
+type ps_all ps_sites.
+type ps_only (list nat -> nat -> ps_sites).
+type ps_except (list nat -> nat -> ps_sites).
+type p_simpl_at (raw -> ps_sites -> pe_target -> ptac).
+type ps_visit (tm -> ps_sites -> nat -> tm -> tm -> nat -> nat -> o).
+type ps_below ((tm -> tm -> nat -> nat -> o) -> tm -> tm -> nat -> nat -> o).
+type ps_args ((tm -> tm -> nat -> nat -> o) -> tm -> tm -> nat -> nat -> o).
+type ps_each ((tm -> tm -> nat -> nat -> o) -> list tm -> list tm -> nat -> nat -> o).
+type ps_named_head (tm -> tm -> o).
+type ps_reference (tm -> tm -> o).
+type ps_selected (ps_sites -> nat -> o).
+type ps_maximum (ps_sites -> nat -> o).
+p_tactic (p_simpl_at Template Sites Target) Goal R :-
+    pe_input Template Name NT, pe_focus Target Goal Old X, ps_maximum Sites Max,
+    ps_visit Name Sites 0 Old New 0 Last, e_need (Max =< Last) "P-SimplOccurrence" [],
+    pe_convert Target Goal New X X R.
+ps_maximum ps_all 0.
+ps_maximum (ps_only Is Max) Max.
+ps_maximum (ps_except Is Max) Max.
+ps_selected ps_all I.
+ps_selected (ps_only Is Max) I :- e_member I Is.
+ps_selected (ps_except Is Max) I :- e_absent (e_member I Is).
+ps_named_head H X :- flex H, !, fail.
+ps_named_head (app F A) X :- !, ps_named_head F X.
+ps_named_head H X :- ps_reference H X.
+ps_reference H X :- flex H, !, fail.
+ps_reference (cast H A) X :- !, ps_reference H X.
+ps_reference (cst N UV) (cst N UW) :- !.
+ps_reference (ind B I UV) (ind B I UW) :- !.
+ps_reference (pfield B J UV) (pfield B J UW) :- !.
+ps_reference (proj B J R) (pfield B J UV) :- !.
+ps_reference (con B I J UV) (con B I J UW) :- !.
+ps_reference X Y :- X == Y.
+ps_visit Name Sites Block T R I K :- flex T, !, R = T, I = K.
+ps_visit Name (ps_only Is Max) Block T T I I :- I >= Max, !.
+ps_visit Name Sites Block T R I K :- (T = app F A, ps_named_head F Name; T = proj B Field V, Name = pfield B Field UV), !,
+    J = s I, (ps_selected Sites J, !, e_need (Block = 0) "P-SimplOverlap" [],
+        ps_maximum Sites Max, (J =< Max, !, ps_below (ps_visit Name Sites J) T Ignore J K; K = J),
+        ps_simpl T R; ps_below (ps_visit Name Sites Block) T R J K).
+ps_visit Name Sites Block T R I K :- ps_below (ps_visit Name Sites Block) T R I K.
+ps_below Walk (app F A) (app G B) I K :- !, ps_args Walk F G I J, Walk A B J K.
+ps_below Walk (prod A B) (prod C D) I K :- !, Walk A C I J, pi x\ Walk (B x) (D x) J K.
+ps_below Walk (lam A B) (lam C D) I K :- !, Walk A C I J, pi x\ Walk (B x) (D x) J K.
+ps_below Walk (letin V A B) (letin W C D) I K :- !, Walk V W I J, Walk A C J L, pi x\ Walk (B x) (D x) L K.
+ps_below Walk (cast M A) (cast N B) I K :- !, Walk M N I J, Walk A B J K.
+ps_below Walk (proj B J R) (proj B J S) I K :- !, Walk R S I K.
+ps_below Walk (abs B) (abs D) I K :- !, pi x\ Walk (B x) (D x) I K.
+ps_below Walk (cas F P T Bs) (cas G Q U Cs) I K :- !, ps_args Walk F G I J, Walk P Q J L, Walk T U L M, ps_each Walk Bs Cs M K.
+ps_below Walk (fix N Ns Fs Bs) (fix N Ns Gs Cs) I K :- !, ps_each Walk Fs Gs I J, pi f\ ps_each Walk (Bs f) (Cs f) J K.
+ps_below Walk T T I I.
+ps_args Walk F F I I :- flex F, !.
+ps_args Walk (app F A) (app G B) I K :- !, ps_args Walk F G I J, Walk A B J K.
+ps_args Walk F F I I.
+ps_each Walk [] [] I I.
+ps_each Walk (T :: Ts) (R :: Rs) I K :- Walk T R I J, ps_each Walk Ts Rs J K.
+
+% whd_simpl_stack: T applied to As is H applied to Bs
+p_refold_product T D B :- e_absent (flex T), ps_whd T [] W [], e_absent (flex W), W = prod D B.
+ps_whd T As H Bs :- flex T, !, H = T, Bs = As.
+ps_whd (app M N) As H Bs :- !, ps_whd M (N :: As) H Bs.
+ps_whd (lam A F) (X :: As) H Bs :- !, ps_whd (F X) As H Bs.
+ps_whd (letin T A U) As H Bs :- !, ps_whd (U T) As H Bs.
+ps_whd (cast M A) As H Bs :- !, ps_whd M As H Bs.
+ps_whd (proj B J R) As H Bs :- ps_projection B J R T, !, ps_whd T As H Bs.
+ps_whd (pfield B J UV) As H Bs :- ps_projection_args B J UV As T Ts, !, ps_whd T Ts H Bs.
+ps_whd (cas F P T Cs) As H Bs :- ps_case T Cs R, !, ps_whd R As H Bs.
+ps_whd (fix K Ns Fs Ts) As H Bs :- ps_fix ps_itself K Ns Fs Ts As R Rs, !, ps_whd R Rs H Bs.
+ps_whd X As H Bs :- ps_const X As R Rs, !, ps_whd R Rs H Bs.
+ps_whd X As X As.
+
+% a constant, or a local definition, and its value
+ps_body X B :- flex X, !, fail.
+ps_body (cst N UV) B :- !, cst_body N UV B.
+ps_body (pfield B J UV) V :- !, record_function B J UV _ V.
+ps_body X B :- var_body X B.
+
+% reduce_case: the scrutinee simplifies to a constructor, whose branch is taken
+ps_case T Cs R :-
+    ps_construct T [] (con B I J UV) Args, ind_info B I UV N E Ms, split N Args Params Fields,
+    nth J Cs Br, ps_arm Br Fields R.
+ps_arm Br [] R :- !, R = Br.
+ps_arm (abs G) (U :: Us) R :- ps_arm (G U) Us R.
+
+% whd_construct: T applied to As simplifies to a constructor applied to Cs. A
+% constant in the way is unfolded for that, whatever its value hides.
+ps_construct T As C Cs :- ps_whd T As H Hs, ps_construct_head H Hs C Cs.
+ps_construct_head H Hs C Cs :- flex H, !, fail.
+ps_construct_head (con B I J UV) Hs C Cs :- !, C = con B I J UV, Cs = Hs.
+ps_construct_head H Hs C Cs :- ps_body H Body, ps_construct Body Hs C Cs.
+
+% reduce_fix: the struct argument simplifies to a constructor, and the body of
+% the function takes the place of the `fix`
+ps_fix Fold K Ns Fs Ts As R Rs :-
+    nth K Ns P, nth P As Arg, ps_construct Arg [] C Cs, apps C Cs Value, ps_put P Value As Rs,
+    ps_unfolded Fold K Ns Fs Ts R.
+ps_unfolded ps_itself K Ns Fs Ts R :- !, nth K (Ts (j\ fix j Ns Fs Ts)) R.
+ps_unfolded (ps_folded Gs) K Ns Fs Ts R :-
+    pi f\ (nth K (Ts f) (Body f), ps_selectors 0 f Gs (Calls f), e_copy (Body f) (Calls f) Gs R).
+ps_selectors J F [] [] :- !.
+ps_selectors J F (G :: Gs) (F J :: Cs) :- ps_selectors (s J) F Gs Cs.
+ps_put 0 V (X :: Xs) (V :: Xs) :- !.
+ps_put (s N) V (X :: Xs) (X :: Ys) :- ps_put N V Xs Ys.
+
+% whd_nothing_for_iota: beta, zeta, casts and every definition at the head
+ps_plain T As H Bs :- flex T, !, H = T, Bs = As.
+ps_plain (app M N) As H Bs :- !, ps_plain M (N :: As) H Bs.
+ps_plain (lam A F) (X :: As) H Bs :- !, ps_plain (F X) As H Bs.
+ps_plain (letin T A U) As H Bs :- !, ps_plain (U T) As H Bs.
+ps_plain (cast M A) As H Bs :- !, ps_plain M As H Bs.
+ps_plain T As T As.
+ps_delta T As Last H Bs Origin :- ps_plain T As X Xs, ps_delta_head X Xs Last H Bs Origin.
+ps_delta_head X Xs Last H Bs Origin :- ps_body X B, !, ps_delta B Xs X H Bs Origin.
+ps_delta_head X Xs Last X Xs Last.
+
+% red_elim_const: the constant X applied to As reduces when its value hides a
+% match or a `fix` that reduces there
+type ps_never (nat -> o).
+type ps_never_field (nat -> nat -> o).
+type ps_projection (nat -> nat -> tm -> tm -> o).
+type ps_projection_args (nat -> nat -> list lvl -> list tm -> tm -> list tm -> o).
+ps_projection B J R T :- ps_construct R [] (con B 0 0 UV) Args, ind_info B 0 UV N E Ms,
+    record_info B Count Eta, split N Args Params Fields, record_length Count Fields, nth J Fields T.
+ps_projection_args B J UV As R Rs :- e_absent (ps_never_field B J), ind_info B 0 UV N E Ms,
+    split N As Params (T :: Rs), ps_projection B J T R.
+ps_const (cst N UV) As R Rs :- ps_never N, !, fail.
+ps_const X As R Rs :- ps_body X B, ps_elim B [] [] Kind, ps_reduce Kind X B As R Rs.
+ps_reduce (ps_el_cases N) X B As R Rs :-
+    ps_at_least N As, ps_delta B As X (cas F P T Cs) Rs Origin, ps_case T Cs R.
+ps_reduce (ps_el_fix Min N Ks) X B As R Rs :-
+    ps_at_least Min As, ps_delta B As X (fix K Ns Fs Ts) Stack Origin,
+    ps_refold_origin Origin X B N Ks As K Ns Fs Ts Fold, ps_fix Fold K Ns Fs Ts Stack R Rs.
+ps_at_least 0 As :- !.
+ps_at_least (s N) (A :: As) :- ps_at_least N As.
+
+% compute_constant_elimination: what the value T of a constant is, under its
+% binders Xs (the innermost first) of the types Ds. A constant at the head of
+% the value is unfolded and looked at in its turn.
+ps_elim T Xs Ds Kind :- ps_plain T [] H As, ps_elim_head H As Xs Ds Kind.
+ps_elim_head H As Xs Ds Kind :- flex H, !, fail.
+ps_elim_head (lam A F) [] Xs Ds Kind :- !, pi x\ ps_elim (F x) (x :: Xs) (A :: Ds) Kind.
+ps_elim_head (fix K Ns Fs Ts) As Xs Ds Kind :- !,
+    e_length N Xs, rev Xs [] Outer, ps_reversible As Outer (fix K Ns Fs Ts) [] Ks,
+    ps_independent Xs Ds As,
+    nth K Ns Rec, e_length P As, ps_trigger Rec P N Min, Kind = ps_el_fix Min N Ks.
+ps_elim_head (cas F P T Cs) As Xs Ds Kind :- !, ps_among T Xs, e_length N Xs, Kind = ps_el_cases N.
+ps_elim_head (cst N UV) As Xs Ds Kind :- ps_never N, !, fail.
+ps_elim_head H As Xs Ds Kind :- ps_body H B, apps B As T, ps_elim T Xs Ds Kind.
+ps_among Y Seen :- e_member Z Seen, Z == Y, !.
+ps_index X (Y :: Ys) K K :- X == Y, !.
+ps_index X (Y :: Ys) J K :- ps_index X Ys (s J) K.
+% compute_constant_reversibility: the arguments of the `fix` are binders of
+% the constant, each one once, and the `fix` mentions none of them; a binder
+% that is no such argument has a type that mentions none of them either
+ps_reversible [] Outer Fix Seen Ks :- !, Ks = [].
+ps_reversible (A :: As) Outer Fix Seen Ks :-
+    ps_index A Outer 0 K, e_absent (e_member K Seen), e_absent (p_mentions Fix A),
+    ps_reversible As Outer Fix (K :: Seen) Ks1, Ks = K :: Ks1.
+ps_independent [] [] As :- !.
+ps_independent (X :: Xs) (D :: Ds) As :- ps_among X As, !, ps_independent Xs Ds As.
+ps_independent (X :: Xs) (D :: Ds) As :- e_absent (e_member A As, p_mentions D A), ps_independent Xs Ds As.
+% the least number of arguments: all the binders when the struct argument is
+% one of them, and as many more as it is behind them otherwise
+ps_trigger Rec P N Min :- ps_less Rec P, !, Min = N.
+ps_trigger Rec P N Min :- ps_minus N P D, ps_plus D (s Rec) Min.
+ps_less 0 (s P) :- !.
+ps_less (s R) (s P) :- ps_less R P.
+ps_minus N 0 D :- !, D = N.
+ps_minus (s N) (s P) D :- ps_minus N P D.
+ps_plus 0 M K :- !, K = M.
+ps_plus (s N) M K :- ps_plus N M K1, K = s K1.
+
+% contract_fix with a function: a recursive call of function K becomes the
+% constant X again, applied to its arguments As where a binder is no argument
+% of the `fix` and to the arguments of the call where it is one. Another
+% function of the block becomes the constant whose value is that function,
+% when the environment has one.
+type ps_refold_origin (tm -> tm -> tm -> nat -> list nat -> list tm -> nat -> list nat -> list tm -> ((nat -> tm) -> list tm) -> ps_fold -> o).
+% Through an alias, recursive calls of a declared mutual block still name
+% that block. A singleton fix keeps the wrapper that simpl started from.
+ps_refold_origin (cst M UV) X B N Ks As K Ns Fs Ts (ps_folded Gs) :-
+    ps_mutual M Base, cst_body M UV F, F == fix K Ns Fs Ts, !,
+    ps_block 0 K Fs (cst M UV) (cst M UV) Ns Fs Ts Gs.
+ps_refold_origin Origin X B N Ks As K Ns Fs Ts Fold :-
+    ps_refold X B N Ks As K Ns Fs Ts Fold.
+ps_refold X B N Ks As K Ns Fs Ts (ps_folded Gs) :-
+    split N As Given Rest, ps_types B Given Types, ps_wrap Ks Types Given X G,
+    ps_block 0 K Fs G X Ns Fs Ts Gs.
+ps_types T [] Ds :- !, Ds = [].
+ps_types T (A :: As) Ds :- ps_plain T [] H Hs, ps_types_head H Hs A As D Ds1, Ds = D :: Ds1.
+ps_types_head (lam D F) [] A As D Ds :- !, ps_types (F A) As Ds.
+ps_types_head H Hs A As D Ds :- ps_body H B, apps B Hs T, ps_types T (A :: As) (D :: Ds).
+ps_wrap [] Types Given X G :- !, apps X Given G.
+ps_wrap (K :: Ks) Types Given X G :- nth K Types T,
+    (pi y\ (ps_put K y Given (Given1 y), ps_wrap Ks Types (Given1 y) X (Body y))), ps_eta (lam T Body) G.
+ps_eta (lam T (y\ app M y)) G :- !, G = M.
+ps_eta L L.
+ps_block J K [] G X Ns Fs Ts Gs :- !, Gs = [].
+ps_block J K (F :: Rest) G X Ns Fs Ts Gs :- J == K, !, ps_block (s J) K Rest G X Ns Fs Ts Gs1, Gs = G :: Gs1.
+ps_block J K (F :: Rest) G X Ns Fs Ts Gs :- ps_sibling X J Ns Fs Ts S, ps_block (s J) K Rest G X Ns Fs Ts Gs1, Gs = S :: Gs1.
+ps_sibling (cst N UV) J Ns Fs Ts S :-
+    ps_mutual N Base, ps_plus J Base M, ps_mutual M Base,
+    cst_body M UV B, B == fix J Ns Fs Ts, !, S = cst M UV.
+ps_sibling X J Ns Fs Ts (fix J Ns Fs Ts).
+
+% Unfold only the requested definitions, then beta/iota/zeta-reduce using the
+% existing kernel relation. Opaque constants have no cst_body and are refused.
+pe_body (cst Number UV) Body :- !, cst_body Number UV Body.
+pe_body (pfield B J UV) V :- !, record_function B J UV _ V.
+pe_body Local Body :- var_body Local Body.
+pe_unfold_all [] T T :- !.
+pe_unfold_all (Template :: Templates) T Result :-
+    pe_input Template C CT, pe_body C Body,
+    e_copy T (C :: []) (Body :: []) Copied,
+    pe_unfold_reduce T Copied Reduced,
+    pe_unfold_all Templates Reduced Result.
+type pe_unfold_reduce (tm -> tm -> tm -> o).
+pe_unfold_reduce T Copied T :- T == Copied, !.
+pe_unfold_reduce T Copied Reduced :- zeta => bi Copied Reduced.
+p_tactic (p_unfold Templates Target) Goal R :-
+    pe_focus Target Goal Old X, pe_unfold_all Templates Old New,
+    pe_convert Target Goal New X X R.
+
+p_tactic (p_rewrite Direction Template Target) Goal R :-
+    pe_rewrite Direction Template Target Goal R.
+pe_rewrite Direction Template pe_goal Goal R :- !,
+    pe_equation Direction Template Goal (e\ t\ proposal\ pe_rewrite_goal e t Goal New proposal) R.
+pe_rewrite Direction Template (pe_hyp Name Reference) Goal R :-
+    pe_focus (pe_hyp Name Reference) Goal Old X,
+    pe_equation Direction Template Old (e\ t\ proposal\ pe_rewrite_hyp Name X Old e t Goal proposal) R.
+
+% Instantiate a quantified equation from one written occurrence. Searching
+% another occurrence undoes every binding, including inferred type arguments.
+% Remaining premises become ordinary proof holes only after their types are
+% fixed. Do not expose an unresolved dependency as a second movable goal.
+kind pe_argument type.
+type pe_arg (tm -> tm -> pe_argument).
+type pe_equation (pe_direction -> raw -> tm -> (tm -> tm -> raw -> o) -> raw -> o).
+type pe_instantiate (pe_direction -> tm -> tm -> tm -> tm -> list pe_argument -> (tm -> tm -> raw -> o) -> raw -> o).
+type pe_pattern (pe_direction -> tm -> tm -> tm -> o).
+type pe_argument_types (list pe_argument -> list raw -> list raw -> o).
+type pe_equality_proof (tm -> tm -> list raw -> tm -> pe_direction -> (tm -> tm -> raw -> o) -> raw -> o).
+kind pe_site type.
+type pe_final (tm -> tm -> pe_site).
+type pe_written (tm -> tm -> pe_site).
+type pe_with_site (pe_site -> o -> o).
+type pe_instance_site (tm -> tm -> pe_site -> o).
+type pe_matched (tm -> tm -> o).
+type pe_match_head (tm -> tm -> o).
+type pe_match_arg (tm -> tm -> o).
+type pe_last_argument (tm -> tm -> o).
+type pe_occurrence (tm -> tm -> o).
+pe_equation Dir Template Target Finish R :-
+    e_fresh Template Written, (p_phase p_passive => e_in Written F FT),
+    pe_instantiate Dir Target F F FT [] Finish R, e_raw_done Written.
+pe_instantiate Dir Target Head F FT Args Finish R :- p_product FT D B, !,
+    pe_instantiate Dir Target Head (app F X) (B X) (pe_arg X D :: Args) Finish R.
+pe_instantiate Dir Target Head F FT [] Finish R :- e_done F, e_done FT, !,
+    pe_orient Dir F FT E T, Finish E T R.
+pe_instantiate Dir Target Head F FT Args Finish R :-
+    whnf FT W, spine W (ind B I UV) As, ind_info B I UV N Elim ([] :: []),
+    split N As Params (Right :: []), pe_last Params Prefix Left, pe_pattern Dir Left Right Pattern,
+    e_done Target, pe_instance_site Target Pattern Focus, pe_argument_types Args [] Raw, e_done Head, e_done FT,
+    pe_eq FT EB EI EUV Ps L Rhs Carrier, !, pe_with_site Focus (pe_equality_proof Head F Raw FT Dir Finish R).
+pe_pattern pe_forward L R L.
+pe_pattern pe_backward L R R.
+pe_argument_types [] Acc Acc.
+pe_argument_types (pe_arg X D :: Xs) Acc Out :- flex X, !,
+    pe_argument_types Xs (r_hole 0 Request X D :: Acc) Out, e_done D.
+pe_argument_types (pe_arg X D :: Xs) Acc Out :- e_done X, infer X A,
+    (D = A; e_done D, sub A D), pe_argument_types Xs (r_ref X [] :: Acc) Out.
+pe_equality_proof Head F Raw FT Dir Finish R :- e_done F, !,
+    pe_orient Dir F FT E T, Finish E T R.
+pe_equality_proof Head F Raw FT Dir Finish
+    (r_apps (r_lam (r_ref FT []) Body) (r_apps (r_ref Head []) Raw :: [])) :-
+    pi pf\ var_type pf FT => (pe_orient Dir pf FT (E pf) (T pf), Finish (E pf) (T pf) (Body pf)).
+% For a bare lemma variable the typed application unifier decomposes G X
+% as the context G applied to X. Other identical terms in G stay in place.
+pe_instance_site Target P (pe_final Target F) :- flex P, !, Target = app F P.
+pe_instance_site Target P (pe_written Target Written) :- pe_occurrence Target Written, pe_match_head P Written.
+pe_with_site (pe_final Target F) G :- pe_last_argument Target F => G.
+pe_with_site (pe_written Target Written) G :- pe_matched Target Written => G.
+
+% Keep the head of the candidate as written. A closed argument, including
+% a repeated argument fixed by this match, can convert to its counterpart.
+pe_match_head P T :- P = T, !.
+pe_match_head (cast P A) T :- !, pe_match_head P T.
+pe_match_head P (cast T A) :- !, pe_match_head P T.
+pe_match_head (proj B J R) (app F S) :- pe_projection_function F B J, pe_match_arg R S.
+pe_match_head (app F R) (proj B J S) :- pe_projection_function F B J, pe_match_arg R S.
+pe_match_head (app F A) (app G B) :- pe_match_head F G, pe_match_arg A B.
+pe_match_head (proj B J R) (proj B J S) :- pe_match_arg R S.
+pe_match_arg P T :- pe_match_head P T, !.
+pe_match_arg (prod A B) (prod C D) :- pe_match_arg A C, (pi x\ var_type x A => pe_match_arg (B x) (D x)), !.
+pe_match_arg (lam A B) (lam C D) :- pe_match_arg A C, (pi x\ var_type x A => pe_match_arg (B x) (D x)), !.
+pe_match_arg P T :- e_done P, conv P T.
+% Rocq's quantified rewrite selects an instance in the term of a cast,
+% the value or body of a let, and the scrutinee or branches of a match.
+% Once selected, pe_motive abstracts that instance throughout the target.
+pe_occurrence (cast M A) P :- !, pe_occurrence M P.
+pe_occurrence T T.
+pe_occurrence (app F R) P :- pe_projection_function F B J, !, pe_occurrence R P.
+pe_occurrence (app F A) P :- pe_occurrence F P; pe_occurrence A P.
+pe_occurrence (proj B J R) P :- pe_occurrence R P.
+pe_occurrence (prod A B) P :- pe_occurrence A P; pi x\ var_type x A => pe_occurrence (B x) P.
+pe_occurrence (lam A B) P :- pe_occurrence A P; pi x\ var_type x A => pe_occurrence (B x) P.
+pe_occurrence (letin V A B) P :- pe_occurrence V P; pi x\ var_type x A => var_body x V => pe_occurrence (B x) P.
+pe_occurrence (cas F M T Bs) P :- pe_occurrence T P; e_member B Bs, pe_occurrence B P.
+pe_occurrence (abs B) P :- pi x\ pe_occurrence (B x) P.
+pe_occurrence (fix K Ns Fs Ts) P :- e_member F Fs, pe_occurrence F P; pi f\ sigma b\ e_member b (Ts f), pe_occurrence b P.
+
+% A prefix projection takes exactly the parameters of its record before the
+% receiver. In the primitive node those parameters come from the receiver.
+type pe_projection_function (tm -> nat -> nat -> o).
+pe_projection_function F B J :- spine F H Ps, template_rigid H,
+    H = pfield B J UV, ind_info B 0 UV N E Ms, split N Ps _ [].
+
+% Compare each written occurrence with a copy of the selected one stripped
+% of casts and explicit projection parameters. Other casts stay in the goal.
+type pe_occurrence_key (tm -> tm -> o).
+pe_occurrence_key T Key :-
+    (pi n\ pi a\ pi out\ e_lookup (cast n a) [] [] out :- e_copy n [] [] out) =>
+    (pi f\ pi t\ pi b\ pi j\ pi r\ e_lookup (app f t) [] [] (proj b j r) :-
+        pe_projection_function f b j, e_copy t [] [] r) =>
+    e_copy T [] [] Key.
+
+type pe_replace (tm -> tm -> tm -> tm -> o).
+type pe_copy_projection (nat -> nat -> tm -> tm -> list tm -> list tm -> tm -> o).
+pe_copy_projection B J F S Xs Ys T :- e_copy S Xs Ys R,
+    ((S == R, !, T = app F S); T = proj B J R).
+pe_replace T M X R :- pe_occurrence_key M Key,
+    ((pi n\ pi a\ pi v\ e_same (cast n a) v :- e_same n v) =>
+    (pi b\ pi j\ pi receiver\ pi f\ pi t\ e_same (app f t) (proj b j receiver) :-
+        pe_projection_function f b j, e_same t receiver) =>
+    (pi f\ pi t\ pi out\ pi b\ pi j\ e_lookup (app f t) (Key :: []) (X :: []) out :-
+        pe_projection_function f b j, pe_copy_projection b j f t (Key :: []) (X :: []) out) =>
+    e_copy T (Key :: []) (X :: []) R).
+
+pe_motive Goal Left (y\ app F y) :- pe_last_argument Goal F, !.
+pe_motive Goal Left Motive :- pe_matched Goal Written, !,
+    pi y\ pe_replace Goal Written y (Motive y).
+pe_motive Goal Left Motive :-
+    pi y\ pe_replace Goal Left y (Motive y),
+        e_absent (Goal == Motive y).
+pe_rewrite_goal E T Goal New R :-
+    pe_eq T B I UV Prefix Left Right Carrier,
+    pe_motive Goal Left Motive,
+    New = Motive Right, e_absent (Goal == New),
+    apps (ind B I UV) Prefix Head, F = app Head Left,
+    Transport = cas F (abs (y\ abs (e\ prod (Motive y) (proof\ Goal)))) E
+        (lam Goal (proof\ proof) :: []),
+    check Transport (prod New (proof\ Goal)),
+    pe_changed pe_goal Goal New prop Transport R.
+pe_rewrite_hyp Name X Old E T Goal R :-
+    pe_eq T B I UV Prefix Left Right Carrier,
+    pe_motive Old Left Motive,
+    New = Motive Right, e_absent (Old == New),
+    apps (ind B I UV) Prefix Head, F = app Head Left,
+    Transport = cas F (abs (y\ abs (e\ Motive y))) E (X :: []),
+    check Transport New,
+    pe_changed (pe_hyp Name (r_ref X [])) Goal New X Transport R.
+
+kind pe_evidence type.
+type pe_search pe_evidence.
+type pe_given (raw -> pe_evidence).
+type p_discriminate (pe_evidence -> pe_target -> ptac).
+type p_injection (raw -> pe_target -> ptac).
+type pe_evidence (pe_evidence -> pe_target -> tm -> tm -> o).
+type pe_constant_return (tm -> tm -> tm -> o).
+type pe_ignore_fields (list mark -> tm -> tm -> o).
+type pe_discriminator_branches (nat -> nat -> list (list mark) -> tm -> tm -> list tm -> o).
+type pe_discriminate (tm -> tm -> tm -> tm -> o).
+type pe_select_field (list mark -> nat -> tm -> o).
+type pe_projection_branches (nat -> nat -> nat -> list (list mark) -> tm -> list tm -> o).
+type pe_injection (tm -> tm -> tm -> raw -> o).
+
+pe_evidence (pe_given Template) pe_goal E T :- !, pe_input Template E T.
+pe_evidence pe_search pe_goal E T :- p_live Name E, infer E T.
+pe_evidence pe_search (pe_hyp Name Template) E T :- !, pe_input Template E T, p_live Any E.
+pe_evidence (pe_given Template) (pe_hyp Name Reference) E T :-
+    pe_input Template E T, pe_input Reference X XT, E == X, p_live Any E.
+
+% Build a constant match motive under every index and the scrutinee. This
+% visits the admitted arity; the kernel still checks the elimination sort.
+pe_constant_return AT S (abs Body) :- whnf AT (prod D B), !,
+    pi x\ pe_constant_return (B x) S (Body x).
+pe_constant_return AT S (abs (x\ S)).
+pe_ignore_fields [] Value Value :- !.
+pe_ignore_fields (Mark :: Marks) Value (abs Body) :-
+    pi x\ pe_ignore_fields Marks Value (Body x).
+pe_discriminator_branches J Wanted [] Yes No [] :- !.
+pe_discriminator_branches J Wanted (Marks :: Rest) Yes No (Branch :: Branches) :-
+    J == Wanted, !, pe_ignore_fields Marks Yes Branch,
+    pe_discriminator_branches (s J) Wanted Rest Yes No Branches.
+pe_discriminator_branches J Wanted (Marks :: Rest) Yes No (Branch :: Branches) :-
+    pe_ignore_fields Marks No Branch,
+    pe_discriminator_branches (s J) Wanted Rest Yes No Branches.
+
+% Distinguish constructor heads by a checked match. The chosen branch yields
+% Goal -> Goal and the other branches yield Goal, so no named False/True
+% library constants, axiom or fabricated universe level are needed.
+pe_discriminate E T Goal Proof :-
+    pe_eq T EB EI EUV Prefix Left Right Carrier,
+    whnf Left LW, spine LW (con B I J UV) LArgs,
+    whnf Right RW, spine RW (con B I K UV) RArgs, e_absent (J == K),
+    whnf Carrier CW, spine CW (ind B I UV) Args,
+    ind_info B I UV N Elimination Marks, split N Args Params Indices,
+    apps (ind B I UV) Params Family, ind_type B I UV FT, inst FT Params AT,
+    infer Goal Sort, pe_constant_return AT Sort Return,
+    pe_discriminator_branches 0 J Marks (prod Goal (x\ Goal)) Goal Branches,
+    Discriminator = lam Carrier (x\ cas Family Return x Branches),
+    check Discriminator (prod Carrier (x\ Sort)),
+    apps (ind EB EI EUV) Prefix Head, Equality = app Head Left,
+    Proof = cas Equality (abs (y\ abs (e\ app Discriminator y))) E
+        (lam Goal (x\ x) :: []),
+    check Proof Goal.
+p_tactic (p_discriminate Evidence Target) Goal (r_ref Proof []) :-
+    pe_evidence Evidence Target E T, pe_discriminate E T Goal Proof.
+
+pe_select_field (Mark :: Marks) 0 (abs Body) :- !,
+    pi x\ pe_ignore_fields Marks x (Body x).
+pe_select_field (Mark :: Marks) (s N) (abs Body) :-
+    pi x\ pe_select_field Marks N (Body x).
+pe_projection_branches J Wanted Position [] Fallback [] :- !.
+pe_projection_branches J Wanted Position (Marks :: Rest) Fallback (Branch :: Branches) :-
+    J == Wanted, !, pe_select_field Marks Position Branch,
+    pe_projection_branches (s J) Wanted Position Rest Fallback Branches.
+pe_projection_branches J Wanted Position (Marks :: Rest) Fallback (Branch :: Branches) :-
+    pe_ignore_fields Marks Fallback Branch,
+    pe_projection_branches (s J) Wanted Position Rest Fallback Branches.
+
+% `injection e` finds the positions at which the two sides of the equation
+% differ under the same constructors, as Rocq does (equality.ml,
+% find_positions): the sides are reduced to weak head normal form; two
+% applications of one constructor are looked into, argument by argument;
+% anything else is a position, unless the two terms convert or their type is
+% a proposition. An inductive type that does not eliminate into Type has no
+% position below it. The goal G becomes `l_n = r_n -> ... -> l_1 = r_1 -> G`,
+% the last position first, and e stays. Each equation is proved by
+% transporting reflexivity along e through the projection that reaches its
+% position. A dependent projection carries its earlier fields together
+% with the selected value in dependent pairs.
+kind pe_position type.
+kind pe_step type.
+type pe_step (nat -> nat -> pe_step).
+type pe_at (tm -> tm -> tm -> (tm -> tm) -> list pe_step -> pe_position).
+type pe_positions (nat -> tm -> tm -> (tm -> tm) -> list pe_step -> list pe_position -> list pe_position -> o).
+type pe_position_fields (nat -> nat -> list lvl -> nat -> tm -> tm -> list (list mark) -> nat -> list tm -> list tm -> (tm -> tm) -> list pe_step -> list pe_position -> list pe_position -> o).
+type pe_below (elim -> list pe_position -> list pe_position -> list pe_position -> o).
+type pe_premises (nat -> nat -> list lvl -> list tm -> tm -> tm -> tm -> tm -> tm -> list pe_position -> tm -> list raw -> o).
+pe_positions Depth L R Proj Path Acc Out :-
+    whnf L LW, spine LW (con B I J UV) LArgs, whnf R RW, spine RW (con B I K UW) RArgs, J == K, !,
+    infer L Carrier, whnf Carrier CW, spine CW (ind B I UV) Args,
+    ind_info B I UV N Elimination Marks, split N Args Params Indices,
+    split N LArgs LParams LeftFields, split N RArgs RParams RightFields,
+    apps (ind B I UV) Params Family, ind_type B I UV FT, inst FT Params AT,
+    pe_position_fields B I UV J Family AT Marks 0 LeftFields RightFields Proj Path Acc Below,
+    pe_below Elimination Below Acc Out.
+pe_positions Depth L R Proj Path Acc Acc :- conv L R, !.
+pe_positions Depth L R Proj Path Acc (pe_at L R T Proj Path :: Acc) :-
+    infer L T, infer T S, whnf S W, e_absent (W == prop), !,
+    e_need (e_absent (Depth = 0)) "P-NothingToInject" [].
+pe_positions Depth L R Proj Path Acc Acc.
+pe_below elim_all Below Acc Below :- !.
+pe_below Elimination Below Acc Acc.
+pe_position_fields B I UV J Family AT Marks Position [] [] Proj Path Acc Acc :- !.
+pe_position_fields B I UV J Family AT Marks Position (Left :: Lefts) (Right :: Rights) Proj Path Acc Out :-
+    infer Left FieldType, pe_constant_return AT FieldType Return,
+    pe_projection_branches 0 J Position Marks Left Branches,
+    pe_positions 1 Left Right (x\ cas Family Return (Proj x) Branches) (pe_step J Position :: Path) Acc Next,
+    pe_position_fields B I UV J Family AT Marks (s Position) Lefts Rights Proj Path Next Out.
+% Close the selected field's type over the constructor variables it uses.
+% Work from newest to oldest. Packing one field can expose dependencies in
+% its own domain, so a telescope produces nested pairs when necessary.
+type pe_pack (list tm -> tm -> tm -> tm -> tm -> o).
+type pe_pair (tm -> tm -> tm -> tm -> tm -> tm -> o).
+pe_pack [] V T V T.
+pe_pack (X :: Xs) V T Packed Closed :- p_mentions T X, !,
+    var_type X D, (pi z\ e_copy T (X :: []) (z :: []) (F z)),
+    e_need (pe_pair D (lam D F) X V Pair PairType) "P-InjectionFamily" [], pe_pack Xs Pair PairType Packed Closed.
+pe_pack (X :: Xs) V T Packed Closed :- pe_pack Xs V T Packed Closed.
+kind pe_family type.
+type pe_family (nat -> nat -> nat -> nat -> pe_family).
+type pe_using_families (list pe_family -> ptac -> ptac).
+type pe_families (list pe_family -> o).
+type pe_family_slots (nat -> list lvl -> list nat -> list psite -> o).
+type pe_family_pair (pe_family -> tm -> tm -> tm -> tm -> tm -> tm -> list lvl -> list nat -> list psite -> o).
+type pe_best_pair (list pe_family -> pe_family -> tm -> tm -> tm -> tm -> o).
+type pe_register_pair (list lvl -> list nat -> list psite -> o).
+p_tactic (pe_using_families Families Command) Goal R :- pe_families Families => p_tactic Command Goal R.
+pe_family_slots 0 [] [] [] :- !.
+pe_family_slots (s N) (U :: Us) (0 :: Ks) (p_site 0 0 U :: Ss) :- U = lv Cell, pe_family_slots N Us Ks Ss.
+pe_family_pair (pe_family Rank B I Count) D F X V Pair PairType UV Ks Sites :-
+    pe_family_slots Count UV Ks Sites, ind_info B I UV 2 elim_all ((nonrec :: nonrec :: []) :: []),
+    apps (ind B I UV) (D :: F :: []) PairType, apps (con B I 0 UV) (D :: F :: X :: V :: []) Pair,
+    infer PairType Sort, whnf Sort (typ U),
+    con_type B I 0 UV CT, inst CT (D :: F :: []) Fields,
+    conv Fields (prod D (a\ prod (app F a) (v\ PairType))), check Pair PairType.
+% Prefer the library family's qualified name, then its visible short name.
+% Without either, two distinct compatible families need a choice of carrier.
+pe_best_pair Choices (pe_family Rank B I N) D F X V :-
+    e_absent (e_member (pe_family Other C J M) Choices, (Other < Rank; Other == Rank), e_absent (C == B, J == I),
+        pe_family_pair (pe_family Other C J M) D F X V Alt AT U K S).
+pe_register_pair [] [] [] :- !.
+pe_register_pair UV Ks Sites :- p_u_register UV Ks, p_u_batches Bs, p_u_tail Bs Tail, Tail = p_batch Sites Extra :: Later.
+pe_pair D F X V Pair PairType :- pe_families Choices, !,
+    e_member Family Choices, pe_family_pair Family D F X V Pair PairType UV Ks Sites,
+    pe_best_pair Choices Family D F X V, pe_register_pair UV Ks Sites, !.
+% A Hol tactic that constructs p_injection directly has no host scope table.
+pe_pair D F X V Pair PairType :- ind_info B I [] 2 elim_all ((nonrec :: nonrec :: []) :: []),
+    pe_family_pair (pe_family 2 B I 0) D F X V Pair PairType [] [] [],
+    e_absent (ind_info C J [] 2 elim_all ((nonrec :: nonrec :: []) :: []), e_absent (C == B, J == I),
+        pe_family_pair (pe_family 2 C J 0) D F X V Alt AT [] [] []), !.
+
+type pe_packed (list pe_step -> tm -> list tm -> tm -> tm -> tm -> o).
+type pe_packed_arm (nat -> list mark -> tm -> list pe_step -> list tm -> tm -> tm -> tm -> o).
+type pe_packed_branches (nat -> nat -> list (list mark) -> tm -> tm -> list tm -> o).
+pe_packed [] X Vars Fallback Value T :- infer X XT, pe_pack Vars X XT Value T.
+pe_packed (pe_step J Pos :: Rest) X Vars Fallback (cas Family Return X Bs) T :-
+    infer X XT, whnf XT WT, spine WT (ind B I UV) Args,
+    ind_info B I UV N elim_all Marks, split N Args Params Indices, apps (ind B I UV) Params Family,
+    con_type B I J UV CT, inst CT Params Fields, nth J Marks ArmMarks,
+    pe_packed_arm Pos ArmMarks Fields Rest Vars Fallback Arm T,
+    ind_type B I UV FT, inst FT Params AT, pe_constant_return AT T Return,
+    pe_packed_branches 0 J Marks Arm Fallback Bs.
+pe_packed_arm 0 (M :: Ms) CT Path Vars Fallback (abs Body) T :- !,
+    whnf CT (prod D F), pi x\ var_type x D =>
+        (pe_packed Path x Vars Fallback (Value x) T, pe_ignore_fields Ms (Value x) (Body x)).
+pe_packed_arm (s K) (M :: Ms) CT Path Vars Fallback (abs Body) T :-
+    whnf CT (prod D F), pi x\ var_type x D => pe_packed_arm K Ms (F x) Path (x :: Vars) Fallback (Body x) T.
+pe_packed_branches J Wanted [] Arm Fallback [].
+pe_packed_branches J Wanted (Ms :: Rest) Arm Fallback (Arm :: Bs) :- J == Wanted, !,
+    pe_packed_branches (s J) Wanted Rest Arm Fallback Bs.
+pe_packed_branches J Wanted (Ms :: Rest) Arm Fallback (Branch :: Bs) :-
+    pe_ignore_fields Ms Fallback Branch, pe_packed_branches (s J) Wanted Rest Arm Fallback Bs.
+
+type pe_field_projection (pe_position -> tm -> tm -> tm -> tm -> tm -> tm -> tm -> o).
+pe_field_projection (pe_at L R T F Path) Carrier WholeLeft WholeRight L R T (lam Carrier F) :-
+    check (lam Carrier F) (prod Carrier (x\ T)), !.
+pe_field_projection (pe_at L R Type F Reverse) Carrier WholeLeft WholeRight PackedL PackedR T Projection :-
+    rev Reverse [] Path,
+    (pi x\ var_type x Carrier => pe_packed Path x [] Fallback (Body x) T),
+    Projection = lam Carrier Body,
+    whnf (Body WholeLeft) PackedL, Fallback = PackedL, whnf (Body WholeRight) PackedR,
+    check Projection (prod Carrier (x\ T)).
+
+pe_premises EB EI EUV Prefix E WholeLeft WholeRight Carrier Goal [] Goal [] :- !.
+pe_premises EB EI EUV Prefix E WholeLeft WholeRight Carrier Goal (P :: Ps) (prod FieldEquality (x\ Rest)) (r_ref Proof [] :: Proofs) :-
+    e_need (pe_field_projection P Carrier WholeLeft WholeRight Left Right FieldType Projection) "P-InjectionDependent" [],
+    e_copy_all Prefix (Carrier :: []) (FieldType :: []) FieldPrefix,
+    pe_type EB EI EUV FieldPrefix Left Right FieldEquality,
+    apps (ind EB EI EUV) Prefix EqualityHead,
+    apps (ind EB EI EUV) FieldPrefix FieldHead,
+    pe_refl EB EI EUV FieldPrefix Left Refl,
+    Proof = cas (app EqualityHead WholeLeft)
+        (abs (y\ abs (e\ app (app FieldHead Left) (app Projection y)))) E (Refl :: []),
+    check Proof FieldEquality,
+    pe_premises EB EI EUV Prefix E WholeLeft WholeRight Carrier Goal Ps Rest Proofs.
+type pe_premise_names (list raw -> phints -> phints -> o).
+pe_premise_names _ p_no_hints p_no_hints :- !.
+pe_premise_names [] Hs Hs.
+pe_premise_names (_ :: More) Hs (p_binding "" p_no_hints Tail) :- pe_premise_names More Hs Tail.
+pe_injection E T Goal (r_apps (r_lam (r_ref Premises []) (g\ r_apps (r_ref g []) Proofs)) (Leaf :: [])) :-
+    pe_eq T EB EI EUV Prefix Left Right Carrier,
+    pe_positions 0 Left Right (x\ x) [] [] Positions,
+    e_need (e_absent (Positions = [])) "P-NoInjection" [],
+    pe_premises EB EI EUV Prefix E Left Right Carrier Goal Positions Premises Proofs,
+    p_hints Goal Written, pe_premise_names Proofs Written Hs, p_keep_hints Hs (r_hole 0 Request H Premises) Leaf.
+p_tactic (p_injection Template pe_goal) Goal R :-
+    pe_input Template E T, pe_injection E T Goal R.
+p_tactic (p_injection Template (pe_hyp Name Reference)) Goal R :-
+    pe_input Template E T, pe_input Reference X XT, E == X, p_live Any E,
+    pe_injection E T Goal R.

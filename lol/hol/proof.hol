@@ -1,0 +1,978 @@
+% LoL ALPHA2 proof policy. This is outside the trusted kernel.
+% The host transports commands; Hol elaborates them and the host later runs
+% the completed Core term through a separate, clean ground kernel session.
+import lol.hol.elab.
+
+kind ptac type.
+type p_refine (raw -> ptac).
+type p_exact (raw -> ptac).
+type p_then (ptac -> ptac -> ptac).
+type p_try (ptac -> ptac).
+type p_first (list ptac -> ptac).
+type p_repeat (ptac -> ptac).
+type p_all (ptac -> ptac).
+kind pmark type.
+type p_closed pmark.
+type p_plain pmark.
+type p_child (pmark -> raw).
+type p_open_fragment (nat -> raw -> tm -> tm -> o).
+type p_opened (nat -> o).
+type p_all_fragments (ptac -> nat -> o).
+type p_all_outer (ptac -> nat -> o).
+type p_child_phase (pphase -> nat -> pmark -> tm -> tm -> o).
+type p_root (raw -> o).
+type p_current_request (raw -> pmark -> o).
+type p_request (raw -> pmark -> raw -> o).
+type p_attach (raw -> o).
+kind ptag type.
+type p_region (ptag -> o).
+kind pphase type.
+type p_passive pphase.
+type p_active pphase.
+type p_transform (ptac -> pphase).
+type p_probe pphase.
+type p_phase (pphase -> o).
+type p_name (string -> tm -> o).
+type p_name_type (tm -> tm -> o).
+type p_name_view (tm -> tm -> o).
+type p_name_body (tm -> tm -> o).
+type p_view (tm -> tm -> o -> o).
+type p_view_type (tm -> tm -> o -> o).
+type p_visible (tm -> tm -> o).
+type p_bare (tm -> tm -> o).
+% What a tactic says of the context of the rest of the proof (elab.hol:
+% p_note), and what the rest then has.
+type pn_clear (tm -> pnote).
+type pn_retype (tm -> tm -> pnote).
+type pn_place (tm -> tm -> pnote).
+type p_cleared (tm -> o).
+type p_placed (tm -> tm -> o).
+type p_retyped o.
+type p_reaches (list tm -> tm -> list tm -> o).
+type p_local_pending (tm -> list tm -> list tm -> o).
+type p_live (string -> tm -> o).
+type p_local_type (tm -> tm -> o).
+type p_mentions (tm -> tm -> o).
+type p_unused (tm -> tm -> o).
+type p_dependent (tm -> tm -> o).
+type p_new_names (list string -> o).
+type p_new_name (string -> list string -> o).
+type p_with_name (string -> tm -> o -> o).
+type p_focus (nat -> tm -> tm -> ptac -> o).
+type p_start (tm -> tm -> o).
+type p_start_root (tm -> tm -> raw -> o).
+type p_policy (o -> o).
+type p_fix (pphase -> nat -> list rposition -> list raw -> ((nat -> tm) -> list raw) -> list rdefault -> tm -> tm -> o).
+type p_fix_finish (pphase -> list rposition -> list tm -> ((nat -> tm) -> list tm) -> list nat -> tm -> o).
+type p_hole (nat -> raw -> tm -> tm -> o).
+type p_hole_phase (pphase -> nat -> raw -> tm -> tm -> o).
+type p_elaborate (raw -> tm -> tm -> o).
+type p_dispatch (ptac -> raw -> tm -> tm -> o).
+type p_prepare (ptac -> tm -> tm -> raw -> o).
+type p_activate (raw -> tm -> tm -> o).
+type p_finish_request (raw -> tm -> o).
+type p_first_prepare (list ptac -> tm -> tm -> raw -> o).
+type p_repeat_children (ptac -> tm -> tm -> raw -> o).
+% Extensions return a prepared raw term. Call e_fresh for a surface template.
+type p_tactic (ptac -> tm -> raw -> o).
+
+% Ordinary program clauses precede local hypotheses in Hol. The imported
+% elaborator therefore calls these explicit, opt-in hooks at marked forms;
+% trying to override its successful cut clauses with local facts is invalid.
+p_policy G :- e_proof_mode => G.
+% Consume the provenance at this hole. A nested hole starts empty unless
+% the tactic that created it supplies a new note.
+e_proof_hole P R A H :- p_goal_names Hs, !,
+    (p_goal_names p_no_hints => p_active_names Hs => p_hole P R A H).
+e_proof_hole P R A H :- p_active_names p_no_hints => p_hole P R A H.
+e_proof_name Name X G :- p_with_name Name X G.
+% Resolve against the current Hol binder context. Once a local name exists,
+% a typing failure cannot reinterpret it as the captured/global fallback.
+e_proof_resolve Name Fallback (r_ref X []) :- p_name Name Original,
+    e_absent (p_replacement Original _), p_surviving Original X, !.
+% Replacement keeps the lexical position of the old hypothesis. A new
+% binder introduced by a subsequent tactic still shadows it.
+type pn_replace (tm -> tm -> pnote).
+type p_replacement (tm -> tm -> o).
+type p_surviving (tm -> tm -> o).
+e_proof_note (pn_replace X Old) G :- p_replacement X Old => p_placed X Old => G.
+p_surviving Old X :- p_replacement New Parent, Parent == Old, !, p_surviving New X.
+p_surviving X X :- e_absent (p_cleared X).
+e_proof_resolve Name (p_capture X) R :- !, p_captured Name X R.
+type p_captured (string -> tm -> raw -> o).
+p_captured Name X (r_ref Y []) :- p_name Any Old, Old == X, p_surviving X Y, !.
+p_captured Name X (p_missing Name).
+e_proof_resolve Name Fallback Fallback.
+% A hypothesis that a tactic replaced or took apart is gone for the rest of
+% the proof, as Rocq clears it: no command reads it by its name, and the host
+% does not show it (pn_clear). A conversion of a hypothesis gives the same
+% variable its new type (pn_retype), as Rocq's convert_hyp does: the term of
+% the proof does not change. pn_place says where the host shows a variable:
+% where the one that it replaces stood.
+e_proof_note (pn_universes Extra) G :- p_u_sites Extra => G.
+e_proof_note (pn_clear X) G :- p_cleared X => G.
+e_proof_note (pn_retype X A) G :- p_retyped => var_type X A => p_name_type X A => p_view X A G.
+e_proof_note (pn_place X Y) G :- p_placed X Y => G.
+p_live Name X :- p_name Name X, e_absent (p_cleared X).
+p_local_type X A :- p_name_type X A, !.
+p_local_type X A :- var_type X A.
+% T mentions the variable X.
+p_mentions T X :- pi y\ e_copy T (X :: []) (y :: []) (M y), e_absent (T == M y).
+% Check a proposed type against the current context. Each reachable local
+% puts its type and (for a definition) its body on the work list just once.
+p_reaches (T :: Ts) X Seen :- p_mentions T X, !.
+p_reaches (T :: Ts) X Seen :- p_live Name Y, e_absent (e_member Z Seen, Z == Y), p_mentions T Y, !,
+    p_local_type Y A, p_local_pending Y (A :: T :: Ts) Work, p_reaches Work X (Y :: Seen).
+p_reaches (T :: Ts) X Seen :- p_reaches Ts X Seen.
+p_local_pending Y Ts (V :: Ts) :- var_body Y V, !.
+p_local_pending Y Ts Ts.
+% Nothing that the rest of the proof has depends on X, which a tactic is
+% about to replace: not the goal, and not the type or the body of a
+% hypothesis (Rocq: "Cannot change H, it is used in hypothesis G").
+p_unused X Goal :- e_need (e_absent (p_dependent X Goal)) "P-Used" (X :: []).
+p_dependent X Goal :- p_mentions Goal X.
+p_dependent X Goal :- p_live Name Y, e_absent (Y == X), p_local_type Y T, p_mentions T X.
+p_dependent X Goal :- p_live Name Y, e_absent (Y == X), var_body Y V, p_mentions V X.
+% Names live on this proof branch. A goal may carry a source telescope
+% without changing its term. A note transports its tail across a debugger
+% stop, including Undo and the children of compound tactics.
+kind phints type.
+type p_no_hints phints.
+type p_binding (string -> phints -> phints -> phints).
+type p_root_names (phints -> o).
+type p_goal_names (phints -> o).
+type p_active_names (phints -> o).
+type pn_names (phints -> pnote).
+type pn_domain (tm -> phints -> pnote).
+type p_domain_names (tm -> phints -> o).
+type pn_auto (tm -> string -> pnote).
+type p_automatic (tm -> string -> o).
+type p_hints (tm -> phints -> o).
+type p_definition_hints (tm -> phints -> o).
+type p_named_body (nat -> nat -> phints -> o).
+type p_definition_alias (nat -> nat -> nat -> nat -> o).
+type p_tail_hints (phints -> string -> phints -> phints -> o).
+type p_keep_hints (phints -> raw -> raw -> o).
+type p_keep_domain (tm -> phints -> raw -> raw -> o).
+type p_global_name (string -> o).
+type p_definition_names (nat -> nat -> phints -> o).
+type p_family_stem (nat -> nat -> string -> o).
+kind pfhint type.
+type p_field_hint (string -> string -> pfhint).
+type p_field_names (nat -> nat -> nat -> list pfhint -> o).
+type p_pending_name (string -> o).
+type p_reusing (tm -> o).
+type p_base_name (string -> tm -> string -> o).
+type p_choose_name (string -> tm -> string -> o).
+type p_fresh_name (string -> string -> o).
+type p_busy_name (string -> o).
+type p_suffix (string -> string -> string -> o).
+type p_increment (string -> string -> o).
+type p_digit_next (char -> char -> o).
+type p_name_raw (string -> string -> tm -> raw -> raw -> o).
+e_proof_note (pn_names Hs) G :- p_goal_names Hs => G.
+e_proof_note (pn_domain X Hs) G :- p_domain_names X Hs => G.
+e_proof_note (pn_auto X Old) G :- p_automatic X Old => G.
+p_hints A Hs :- p_active_names Found, !, p_origin_hints Found A Hs.
+p_hints A Hs :- p_origin_hints p_no_hints A Hs.
+type p_origin_hints (phints -> tm -> phints -> o).
+p_origin_hints Hs A Hs :- Hs = p_binding _ _ _, !.
+p_origin_hints _ A Hs :- p_definition_hints A Hs, !.
+p_origin_hints _ A p_no_hints.
+% Follow a syntactic reference to an earlier definition with the indicated
+% arity. No reduction, normalization or universe constraint is necessary to
+% look up these names; a flexible head or identifier has no provenance.
+type p_syntax_head (tm -> tm -> o).
+type p_head_spelling (tm -> string -> o).
+% An identifier must evaluate to a known natural. A head-only flex test
+% would also accept s X; matching that against a declaration would bind X.
+type p_known_id (nat -> o).
+p_known_id N :- e_absent (e_absent (Value is N, e_absent (flex Value))).
+p_syntax_head (cst Id UV) (cst Id []) :- p_known_id Id.
+p_syntax_head (ind B I UV) (ind B I []) :- p_known_id B, p_known_id I.
+p_syntax_head (con B I J UV) (con B I J []) :- p_known_id B, p_known_id I, p_known_id J.
+p_syntax_head (pfield B J UV) (pfield B J []) :- p_known_id B, p_known_id J.
+p_syntax_head (proj B J _) (pfield B J []) :- p_known_id B, p_known_id J.
+p_definition_hints A Hs :- spine A Head Args, e_absent (flex Head), Head = cst Id UV,
+    p_known_id Id, e_length N Args, p_named_body Id N Hs.
+p_named_body Id N Hs :- p_definition_names Id N Hs, !.
+p_named_body Id N Hs :- p_definition_alias Id N Earlier Arity, Earlier < Id, p_named_body Earlier Arity Hs.
+p_tail_hints p_no_hints "" p_no_hints p_no_hints.
+p_tail_hints (p_binding Name Domain More) Name Domain More.
+p_keep_hints p_no_hints R R :- !.
+p_keep_hints Hs R (p_note (pn_names Hs) R).
+p_keep_domain X p_no_hints R R :- !.
+p_keep_domain X Hs R (p_note (pn_domain X Hs) R).
+p_name_raw "" Name X R (p_named Name X (p_note (pn_auto X "") R)) :- !.
+p_name_raw Given Name X R (p_named Name X R).
+p_choose_name Hint A Name :- p_base_name Hint A Stem, p_fresh_name Stem Name.
+p_base_name (C :: Cs) A (C :: Cs) :- !.
+% Run the kernel sort query under double negation: no choice for an evar
+% or a universe escapes the test. A missing sort takes the Type fallback.
+p_base_name [] A "H" :- e_absent (e_absent (e_silent_failure =>
+    (e_done A, infer A S, whnf S W, (W == prop; W == typ lz)))), !.
+p_base_name [] A "X".
+p_busy_name Name :- p_pending_name Name.
+p_busy_name Name :- p_global_name Name.
+p_busy_name Name :- p_live Name X, e_absent (p_reusing X).
+p_fresh_name Stem Stem :- e_absent (p_busy_name Stem), !.
+p_fresh_name Stem Name :- rev Stem [] Back, p_numeric_suffix Back Digits Letters, Digits = _ :: _,
+    p_global_name Stem, !, rev Letters [] Root, p_increment Digits Next, p_suffix Root Next Name.
+p_fresh_name Stem Name :- rev Stem [] Back, p_numeric_suffix Back Digits Letters, rev Letters [] Base,
+    rev Digits [] Written, p_leading_zeroes Written Padding, e_u_append Base Padding Root, p_suffix Root "0" Name.
+type p_numeric_suffix (string -> string -> string -> o).
+p_numeric_suffix (D :: Ds) (D :: Digits) Letters :- (D == '9'; p_digit_next D _), !, p_numeric_suffix Ds Digits Letters.
+p_numeric_suffix Letters [] Letters.
+type p_leading_zeroes (string -> string -> o).
+p_leading_zeroes ('0' :: D :: Ds) ('0' :: Padding) :- !, p_leading_zeroes (D :: Ds) Padding.
+p_leading_zeroes Digits [].
+type p_name_root (string -> string -> o).
+p_name_root Stem Root :- rev Stem [] Back, p_without_digits Back Base, rev Base [] Root.
+type p_without_digits (string -> string -> o).
+p_without_digits (D :: Ds) Rest :- (D == '9'; p_digit_next D _), !, p_without_digits Ds Rest.
+p_without_digits Rest Rest.
+p_suffix Stem Digits Name :- p_available_suffix Stem Digits Name _.
+% A telescope only adds occupied names. After choosing a numbered name,
+% remember the next candidate for that root until we leave its binder.
+type p_with_binder_name (string -> tm -> string -> o -> o).
+type p_suffix_start (string -> string -> o).
+type p_from_suffix (string -> string -> o).
+type p_available_suffix (string -> string -> string -> string -> o).
+type p_with_stem (string -> string -> o -> o).
+p_with_binder_name (C :: Cs) A Name Scope :- !, p_choose_name (C :: Cs) A Name, Scope.
+p_with_binder_name Hint A Name Scope :- p_base_name Hint A Stem, p_with_stem Stem Name Scope.
+p_with_stem Stem Name Scope :- e_absent (p_busy_name Stem), !, Name = Stem, Scope.
+p_with_stem Stem Name Scope :- p_name_root Stem Root, p_from_suffix Root Digits,
+    p_available_suffix Root Digits Name Found, p_increment Found Next, (p_suffix_start Root Next => Scope).
+p_from_suffix Root Digits :- p_suffix_start Root Found, !, Digits = Found.
+p_from_suffix Root "0".
+p_available_suffix Root Digits Name Digits :- rev Digits [] Suffix, e_u_append Root Suffix Candidate,
+    e_absent (p_busy_name Candidate), !, Name = Candidate.
+p_available_suffix Root Digits Name Found :- p_increment Digits More, p_available_suffix Root More Name Found.
+p_increment [] "1".
+p_increment ('9' :: Ds) ('0' :: Next) :- !, p_increment Ds Next.
+p_increment (D :: Ds) (N :: Ds) :- p_digit_next D N.
+p_digit_next '0' '1'.
+p_digit_next '1' '2'.
+p_digit_next '2' '3'.
+p_digit_next '3' '4'.
+p_digit_next '4' '5'.
+p_digit_next '5' '6'.
+p_digit_next '6' '7'.
+p_digit_next '7' '8'.
+p_digit_next '8' '9'.
+% The names that a tactic gives to what it introduces are new: no hypothesis
+% has one of them, and none is given twice (Rocq: "H is already used", "a is
+% used twice"). An empty spelling asks the tactic to choose a fresh name.
+p_new_names [] :- !.
+p_new_names (Name :: Names) :- e_need (p_new_name Name Names) "P-NameUsed" [], p_new_names Names.
+p_new_name [] Names :- !.
+p_new_name Name Names :- e_absent (e_member Name Names), e_absent (p_live Name X).
+
+% Naming never instantiates a flexible Core term. For a rigid local value,
+% var_type can recover its already established type, including f j selectors.
+% Missing evidence remains absent; this is not a second infer judgment.
+p_with_name Name X G :- flex X, !, (p_name Name X => G).
+p_with_name Name X G :- var_type X A, !,
+    (p_name Name X => p_name_type X A => p_view X A G).
+p_with_name Name X G :- p_name Name X => G.
+% What the host shows of a local variable besides its name: its body when it
+% is a local definition (p_name_body), and its type as that is shown when it
+% has a `let` (p_name_view).
+p_view X A G :- var_body X V, !, p_visible V W, p_view_type X A (p_name_body X W => G).
+p_view X A G :- p_view_type X A G.
+p_view_type X A G :- has_let A, visible A B, !, (p_name_view X B => G).
+p_view_type X A G :- G.
+% A term as the host shows it: a `let` without its type unless that type is
+% a proposition (kernel: shown). A term that has no `let` is shown as it is.
+p_visible A B :- shown A B.
+% The mark of a name in the term of a proof (elab.hol: e_marked) is a
+% proposition as far as a check of that term goes.
+var_type (p_mark Name) prop :- e_absent (flex Name).
+e_proof_fix K Choices Types Bodies Defaults M A :-
+    p_phase Ph, !, p_fix Ph K Choices Types Bodies Defaults M A.
+
+% Fix bodies must be complete before guardedness judges them. Only the passive
+% proposal pass defers this finalization; active replay restores both checks.
+% Link the Core structure before visiting bodies, so active replay sees the
+% conclusions and holes constrained by the passive pass rather than fresh ones.
+p_fix Ph K Choices Types Bodies Defaults (fix K Ns Fs Ts) A :-
+    e_types Types Fs, nth K Fs A,
+    (pi f\ (pi j\ pi t\ (var_type (f j) t :- nth j Fs t)) =>
+        e_bodies (Bodies f) Fs (Ts f)),
+    e_defaults Defaults,
+    p_fix_finish Ph Choices Fs Ts Ns (fix K Ns Fs Ts).
+p_fix_finish p_passive Choices Fs Ts Ns X.
+p_fix_finish (p_transform Command) Choices Fs Ts Ns X.
+p_fix_finish p_probe Choices Fs Ts Ns X.
+p_fix_finish p_active Choices Fs Ts Ns X :-
+    e_need (e_done_all Fs, pi f\ e_done_all (Ts f)) "E-Unsolved" [],
+    e_need (e_choices Choices Fs Ns, e_guard X) "F-Guard" [].
+
+% Fetch the nearest phase once. A failing active action must never fall back
+% to an outer passive phase, nor may an inner passive pass see an outer active.
+p_hole P R A H :- p_phase Ph, !, p_hole_phase Ph P R A H.
+% The request of a hole that a debugger stop dispatched is p_child Mark, and
+% Mark is p_closed once the activation of its fragment is over. The fragment
+% is not a part of the request: an enclosing command would otherwise carry
+% every command below it. A closed fragment has no leaf left. One whose
+% activation still goes on is the p_open_fragment of its depth, with the type
+% and the term of its hole, and all: transforms it there, in its own context.
+p_hole_phase Ph P R A H :- e_absent (flex R), R = p_child Mark, !,
+    p_child_phase Ph P Mark A H.
+p_child_phase (p_transform Command) P Mark A H :- !.
+p_child_phase Ph P Mark A H :- e_absent (flex Mark).
+p_opened Depth :- p_open_fragment Depth R A H, !.
+% The probe of a command reads its fragment once more, after the passive pass
+% solved what it could: a hole or an implicit argument that got a value is
+% typed against its type there, under its binders, so that what its universes
+% owe is recorded while the command can still fail (Rocq checks the instance
+% of an evar where it defines it). Nothing else happens in this phase.
+p_hole_phase p_probe P R A H :- e_done H, e_done A, !, check H A.
+p_hole_phase p_probe P R A H :- !.
+p_hole_phase p_passive P R A H :- flex R, !.
+p_hole_phase p_passive P R A H :- e_out R A H.
+p_hole_phase p_active P R A H :- e_absent (flex R), !,
+    e_out R A H, e_need (e_done H, e_done A) "E-Unsolved" (H :: A :: []).
+p_hole_phase p_active P R A H :- e_done H, e_done A, !,
+    R = r_ref H [].
+% The binders of the header of a theorem are in the context of its first
+% goal, as Rocq puts them there: the root gets the command that introduces
+% them (p_u_initial) and no debugger stop.
+p_hole_phase p_active P R A H :- p_u_initial (Command :: Rest), p_root (r_hole Q Root RH RA), Root == R, !,
+    p_dispatch Command R A H.
+p_hole_phase p_active P R A H :-
+    p_visible A B, (p_focus P B H Command => p_display_focus A),
+    p_dispatch Command R A H.
+
+% Show the universe obligations at this stop using the same default policy
+% as Qed. The recorded cells may acquire additional constraints on resume.
+type p_show_focus o.
+type p_display_names (phints -> o).
+type p_display_focus (tm -> o).
+p_display_focus A :- p_hints A Origin, p_display_spine A Origin Hs, Hs = p_binding _ _ _, !,
+    (p_display_names Hs => p_show_focus).
+% Preview the same spellings as intro under temporary, typed binders.
+% Read only a visible product or let. A flexible head stays flexible.
+type p_display_spine (tm -> phints -> phints -> o).
+p_display_spine A Hs Out :- flex A, !, Out = Hs.
+p_display_spine (prod D Body) Hs (p_binding Name Domain Tail) :- !,
+    p_tail_hints Hs Hint Domain Rest, p_with_binder_name Hint D Name
+        (pi x\ var_type x D => p_pending_name Name => p_display_spine (Body x) Rest Tail).
+p_display_spine (letin V D Body) Hs (p_binding Name Domain Tail) :- !,
+    p_tail_hints Hs Hint Domain Rest, p_with_binder_name Hint D Name
+        (pi x\ var_type x D => var_body x V => p_pending_name Name => p_display_spine (Body x) Rest Tail).
+p_display_spine A Hs Hs.
+p_display_focus A :- p_show_focus.
+type p_focus_constraints (list uconstraint -> o).
+p_show_focus :- template_active, u_stream Q, u_context Given, !,
+    u_flat Q Recorded [], e_u_resolve_defaults Recorded Given Cs,
+    (p_focus_constraints Cs => (debug "LoL proof", true)).
+p_show_focus :- debug "LoL proof", true.
+
+% Transform old residual leaves only. Prepared fragments from the left tactic
+% are traversed; children newly created by the right tactic are not revisited.
+p_hole_phase (p_transform Command) P R A H :- e_absent (flex R), !,
+    e_out R A H.
+p_hole_phase (p_transform Command) P R A H :- e_done H, e_done A, !,
+    R = r_ref H [].
+p_hole_phase (p_transform Command) P R A H :-
+    (p_current_request R p_plain => p_prepare Command A H Prepared), R = Prepared.
+
+% A closed fragment was finished, with its hole and the type of its hole, by
+% the activation of its own command. The finishing walk of an enclosing
+% command does not finish it again.
+e_proof_finish P R A H :- e_absent (flex R), R = p_child Mark, !,
+    e_need (e_absent (flex Mark)) "E-Unsolved" (H :: A :: []).
+e_proof_finish P R A H :-
+    e_need (e_done H, e_done A) "E-Unsolved" (H :: A :: []),
+    p_finish_request R H.
+p_finish_request R H :- flex R, !, R = r_ref H [].
+p_finish_request R H :- e_raw_done R.
+
+% Passive elaboration fixes explicit arguments and the conclusion. Active
+% traversal reuses these cells and their prepared fragments under real binders.
+p_elaborate R A H :-
+    (p_phase p_passive => e_out R A H), p_activate R A H.
+p_activate R A H :-
+    (p_phase p_active => e_out R A H), e_raw_done R,
+    e_need (e_done H, e_done A) "E-Unsolved" (H :: A :: []).
+% The entry for a statement that has no universe. It is a proof like any
+% other: a command may still leave a level out (p_universe_start).
+p_start A H :- p_universe_start 0 [] A 0 Count Context Statement H.
+p_start_root A H R :- p_root_names Hints, !, (p_goal_names Hints => p_start_goal A H R).
+p_start_root A H R :- p_start_goal A H R.
+type p_start_goal (tm -> tm -> raw -> o).
+p_start_goal A H R :- e_at 0 =>
+    (e_need (e_done A, infer A S, whnf S W, is_sort W) "E-Unify" (A :: []),
+        pi region\ p_region region =>
+            (R = r_hole 0 Request H A,
+            (p_root R => p_open_fragment 0 R A H =>
+                p_policy (p_elaborate R A H)))).
+
+% The entire command has one region, including all its generated siblings.
+% A command cell is a fresh bare ptac variable at the current pi scope.
+p_dispatch Command Request A H :-
+    p_u_command Command Scoped, pi region\ p_region region =>
+        ((p_current_request Request Mark => p_prepare Scoped A H R),
+        p_request Request Mark R, p_opened Depth,
+        (p_open_fragment (s Depth) R A H => p_activate R A H),
+        Mark = p_closed).
+% A dispatched request gets a fresh mark; a request that a transformation
+% fills (p_plain) gets its fragment, and one that is bound already is kept.
+p_request Request Mark R :- flex Request, flex Mark, !, Request = p_child Mark.
+p_request Request Mark R :- flex Request, !, Request = R.
+p_request (p_child Mark) Mark R :- !.
+p_request R Mark R.
+p_attach R :- p_current_request Request Mark, p_request Request Mark R.
+p_prepare Command A H R :- flex Command, !, e_need fail "P-NoCommand" [].
+p_prepare (p_universe_command Kinds (p_then Left Right)) A H R :- !,
+    p_prepare (p_then (p_universe_command Kinds Left) (p_universe_command Kinds Right)) A H R.
+p_prepare (p_universe_command Kinds (p_try Command)) A H R :- !,
+    p_prepare (p_try (p_universe_command Kinds Command)) A H R.
+p_prepare (p_universe_command Kinds (p_first Commands)) A H R :- !,
+    p_u_wrap Kinds Commands Wrapped, p_prepare (p_first Wrapped) A H R.
+p_prepare (p_universe_command Kinds (p_repeat Command)) A H R :- !,
+    p_prepare (p_repeat (p_universe_command Kinds Command)) A H R.
+p_prepare (p_universe_command Kinds (p_all Command)) A H R :- !,
+    p_prepare (p_all (p_universe_command Kinds Command)) A H R.
+% One execution of a primitive reads its terms once: each level that they
+% leave out is a universe of that reading, as Rocq makes one. The universes
+% stay open: they are registered with the proof and settled when it ends.
+p_prepare (p_universe_command Plan Command) A H Result :- !,
+    p_u_fresh Plan Fresh Kinds Written, p_u_register Fresh Kinds,
+    Scope = p_scope Written Extra Linked, (Written = [], !; p_u_link Scope),
+    e_u_cells Reg, e_u_append Fresh Reg Local, u_stream Q, u_flat Q Before [],
+    (p_u_sites Scope => ((p_u_read Read => e_u_cells Local => p_prepare Command A H R),
+        p_u_mark Read, p_u_probe R A H, p_u_checked Before Read)),
+    p_u_fragment Scope R Result.
+p_prepare (p_exact Template) A H (r_ref H []) :- !,
+    e_fresh Template R,
+    (p_phase p_passive => e_out R A H), p_u_passed,
+    e_need (e_done H, e_done A) "P-ExactUnsolved" (H :: A :: []),
+    p_activate R A H.
+p_prepare (p_refine Template) A H R :- !,
+    e_fresh Template R, (p_phase p_passive => e_out R A H).
+p_prepare (p_then Left Right) A H R :- !,
+    p_prepare Left A H R, p_attach R,
+    (p_phase (p_transform Right) => e_out R A H).
+% The request stays unbound until its inner tactic is prepared, so walking
+% the open fragments cannot revisit the all command itself. Every old sibling
+% is transformed before active replay exposes a new debugger stop. The
+% fragments are walked from the innermost one: that is the order of their
+% leaves in the proof, as the leaves before an open hole are closed.
+p_prepare (p_all Command) A H R :- !,
+    p_current_request Request Mark,
+    e_need (flex Request) "P-AllActive" [],
+    p_opened Depth, p_all_fragments Command Depth,
+    e_need (e_absent (flex Request)) "P-AllFocus" [], R = Request.
+p_all_fragments Command Depth :- p_open_fragment Depth R A H, !,
+    (p_phase (p_transform Command) => e_out R A H),
+    p_all_outer Command Depth.
+p_all_outer Command 0 :- !.
+p_all_outer Command (s Depth) :- p_all_fragments Command Depth.
+p_prepare (p_try Command) A H R :- (e_silent_failure => p_prepare Command A H R), !.
+p_prepare (p_try Command) A H (r_hole 0 Request H A) :- !.
+p_prepare (p_first Commands) A H R :- !, p_first_prepare Commands A H R.
+p_prepare (p_repeat Command) A H R :-
+    (e_silent_failure => p_prepare Command A H R), !,
+    p_attach R, p_repeat_children Command A H R.
+p_prepare (p_repeat Command) A H (r_hole 0 Request H A) :- !.
+p_prepare Command A H R :- p_bare A B, p_tactic Command B R,
+    (p_phase p_passive => e_out R A H).
+% The mark of a name (elab.hol: p_mark) at the head of a goal is no part of
+% the goal that a tactic reads: a term that a command writes may have left
+% one there (the body of a `let` in a type).
+p_bare A B :- e_absent (flex A), A = letin V T F, e_absent (flex V), V = p_mark Name, !, p_bare (F V) B.
+p_bare A A.
+p_first_prepare (Command :: Commands) A H R :- (e_silent_failure => p_prepare Command A H R), !.
+p_first_prepare (Command :: Commands) A H R :- p_first_prepare Commands A H R.
+p_first_prepare [] A H R :- e_need fail "P-First" [].
+
+% Conservative progress: a proposal whose kernel normal form is still a hole
+% does not justify another repeat iteration. Keep the successful refinement,
+% but do not loop on identity wrappers or constraint-only changes. Arbitrarily
+% growing proof proposals still require the normal execution resource bounds.
+p_repeat_children Command A H R :- norm H N, flex N, !.
+p_repeat_children Command A H R :-
+    (p_phase (p_transform (p_repeat Command)) => e_out R A H).
+
+% The elaborator also calls e_hole_policy for used implicit/r_block cells,
+% while their original binder hypotheses are still active. Unused cells
+% continue through e_unused without introducing a proof goal.
+
+
+% ------------------------------------------------------------------------------
+% The universes of a proof
+% ------------------------------------------------------------------------------
+% Rocq keeps the universes of a proof open while the proof goes on and
+% settles them where it ends. Here:
+% - A level that a command leaves out is a universe of the proof: a cell
+%   (a hole, an instance that is left out, and a hole of the statement that
+%   its header did not settle), or a universe that nothing settles (a `Type`
+%   that is written without a level, and the universe that the type of an
+%   argument gets). They are registered in the order in which they were made
+%   (e_u_cells, with their kinds in p_u_kinds): two lists that end in a
+%   variable and grow there.
+% - The kernel records what it compares while the proof goes on (u_recording):
+%   a command adds constraints and fails only when what is recorded has no
+%   model, puts a universe that is not a cell below Type@{0}, or needs a level
+%   below an expression that the rest does not put there.
+% - When no goal is left the complete term is checked once more, so that
+%   every constraint is recorded, and p_u_close settles the cells as a
+%   definition settles its own (e_u_minimize). A universe that is not in the
+%   statement after that is private to the proof for Rocq: it gets the least
+%   level that the constraints allow, and what is left of the constraints is
+%   what the theorem needs of its universes. A statement that closes its
+%   constraints must have them all (mode 1), and the others get them.
+% The answer is the status (0: settled), the number of universes, their
+% constraints, the statement and the term. The host admits them in a clean
+% kernel, as before.
+type p_universe_command (list nat -> ptac -> ptac).
+type p_universe_start (nat -> list uconstraint -> tm -> nat -> nat -> list uconstraint -> tm -> tm -> o).
+type p_universe_statement (nat -> list nat -> list uconstraint -> nat -> raw -> list ptac -> nat -> nat -> list uconstraint -> tm -> tm -> tm -> o).
+type p_u_closed (list lvl -> nat -> list uconstraint -> tm -> nat -> nat -> list uconstraint -> tm -> tm -> o).
+type p_u_stated (list lvl -> nat -> list nat -> list uconstraint -> nat -> raw -> list ptac -> nat -> nat -> list uconstraint -> tm -> tm -> tm -> o).
+type p_u_run (nat -> nat -> list uconstraint -> list uconstraint -> list lvl -> list lvl -> list nat -> list uconstraint -> tm -> list ptac -> nat -> nat -> list uconstraint -> tm -> tm -> tm -> o).
+type p_u_marked (list lvl -> o).
+type p_u_marks (list lvl -> list lvl -> tm -> o).
+type p_u_kinds (list nat -> o).
+type p_u_initial (list ptac -> o).
+
+% A statement that is elaborated already, under the universes that it names:
+% they are all the universes of the theorem, and so are their constraints.
+p_universe_start Count Context Template Status OutCount OutContext OutType OutBody :-
+    e_u_bind Count [] (UV\ pi Pool\ p_u_pool Pool =>
+        p_u_closed UV Count Context Template Status OutCount OutContext OutType OutBody).
+p_u_closed UV Count Context Template Status OutCount OutContext OutType OutBody :-
+    u_subconstraints UV Context Given, u_term UV Template A,
+    p_u_run 1 Count Context Given UV Reg RegKinds [] A [] Status OutCount OutContext OutType OutBody Marks.
+
+% A statement as it is written. It is read as a declaration reads its type
+% (e_u_query: the complete term is checked once more, so that an implicit
+% argument that was solved late owes what it owes). Its header settles the
+% cells that it can, as Rocq minimizes the universes of a statement before
+% the proof starts; one that is left stays a cell of the proof (a statement
+% that names no universe only: the host has refused the others).
+% OutMarks says where each marker of the statement ended: `cst 0 Levels`, one
+% level for each kind of Kinds in the universes of the answer. The host holds
+% the answer to the statement by them (Qed). A marker that is left is in the
+% statement where it was written, also in a cast, which stays in the term as
+% Rocq keeps it: its universe is a universe of the theorem for that.
+p_universe_statement Count Kinds Context Mode Raw Initial Status OutCount OutContext OutType OutBody OutMarks :-
+    e_u_bind Count [] (UV\ pi Pool\ p_u_pool Pool =>
+        p_u_stated UV Count Kinds Context Mode Raw Initial Status OutCount OutContext OutType OutBody OutMarks).
+% The host may supply a closed monomorphic statement already accepted by
+% the kernel. Recheck the term here; other headers are read with their cells.
+type p_checked_header (raw -> tm -> o).
+type p_read_header (raw -> tm -> o).
+p_read_header Raw A :- p_checked_header Written T, Raw == Written, !, infer T S, A = T.
+p_read_header Raw A :- e_fresh Raw R, e_query R A S, check A S.
+p_u_stated UV Count Kinds Context Mode Raw Initial Status OutCount OutContext OutType OutBody OutMarks :-
+    e_u_slots Kinds UV Slots, p_u_open Slots Reg, p_u_open Kinds RegKinds, u_subconstraints UV Context Given, Q = u_chunk 0 Tree Full Rest,
+    (u_origins Mode Reg Marks => (
+    (e_at 0 => e_silent_failure => u_context Given => u_parameters UV => e_u_cells Slots => e_u_net [] Kinds Slots [] => u_recording => u_stream Q => u_levels_apart =>
+        p_read_header Raw A0),
+    u_flat Q Pending [], e_u_resolve_defaults Pending Given Cs0, (e_silent_failure => e_u_minimize Mode Given UV Kinds Slots Cs0 Solved),
+    p_u_header_type Solved A0 A, p_u_settled_constraints Solved Cs0 Cs,
+    u_map_levels (p_u_settled Solved) 0 0 Slots Stated,
+    (p_u_marked Stated => p_u_run Mode Count Context Given UV Reg RegKinds Cs A Initial Status OutCount OutContext OutType OutBody OutMarks))).
+
+% The proof itself, and what it leaves. The cut is after the scope of the
+% recording: no failure of what follows may ask the proof for another term.
+p_u_run Mode Count Context Given UV Reg RegKinds Cs A Initial Status OutCount OutContext OutType OutBody OutMarks :-
+    Q = u_chunk 0 Tree Full Rest,
+    p_u_now Reg Header, p_u_now RegKinds HeaderKinds,
+    (p_u_batches Batches => p_u_header Header HeaderKinds => u_context Given => u_parameters UV => e_u_cells Reg => p_u_kinds RegKinds => p_u_initial Initial => u_recording => u_stream Q => u_levels_apart =>
+        (p_u_record_all Cs, p_start_root A M Root, p_u_gather A M Cells CellKinds All)), !,
+    p_u_finish Mode Count Context Given UV A M Cells CellKinds All Status OutCount OutContext OutType OutBody OutMarks.
+
+% The registry: lists that end in a variable.
+type p_u_open (list A -> list A -> o).
+type p_u_tail (list A -> list A -> o).
+type p_u_now (list A -> list A -> o).
+type p_u_register (list lvl -> list nat -> o).
+type p_u_pool ((nat -> nat) -> o).
+type p_u_count (list nat -> nat -> nat -> o).
+type p_u_rigid_cells (nat -> list nat -> list lvl -> o).
+type p_u_pooled (nat -> lvl -> o).
+kind psite type.
+kind pbatch type.
+type p_site (nat -> nat -> lvl -> psite).
+type p_batch (list psite -> list psite -> pbatch).
+kind pscope type.
+type p_scope (list psite -> list psite -> nat -> pscope).
+type pn_universes (pscope -> pnote).
+type p_u_sites (pscope -> o).
+type p_u_link (pscope -> o).
+type p_u_command (ptac -> ptac -> o).
+type p_u_fragment (pscope -> raw -> raw -> o).
+type p_u_batches (list pbatch -> o).
+type p_u_header (list lvl -> list nat -> o).
+type p_u_site (list psite -> nat -> nat -> lvl -> o).
+type p_u_fresh (list nat -> list lvl -> list nat -> list psite -> o).
+type p_u_ordered (list pbatch -> list lvl -> list nat -> o).
+type p_u_insert (psite -> list psite -> list psite -> o).
+type p_u_merge_sites (list psite -> list psite -> list psite -> o).
+type p_u_emit (list psite -> list lvl -> list nat -> list lvl -> list nat -> o).
+type p_u_wrap (list nat -> list ptac -> list ptac -> o).
+type p_u_record_all (list uconstraint -> o).
+p_u_open [] Tail.
+p_u_open (X :: Xs) (X :: Ys) :- p_u_open Xs Ys.
+p_u_tail Xs Xs :- flex Xs, !.
+p_u_tail (X :: Xs) Tail :- p_u_tail Xs Tail.
+p_u_now Xs [] :- flex Xs, !.
+p_u_now (X :: Xs) (X :: Ys) :- p_u_now Xs Ys.
+p_u_register [] [] :- !.
+p_u_register Cells Kinds :- e_u_cells Reg, p_u_kinds RegKinds,
+    p_u_tail Reg CellTail, p_u_tail RegKinds KindTail, p_u_now RegKinds Before, p_u_count Before 0 N,
+    p_u_rigid_cells N Kinds Cells, p_u_open Cells CellTail, p_u_open Kinds KindTail.
+% A universe that nothing settles (kind 5) is no cell. The proof binds one
+% function where it starts (p_u_pool), and the universe is that function at
+% the number of such universes that were registered before it: as many as a
+% proof asks for, each one a term that no unification makes another universe
+% and that every cell of the proof may become. A cell that is compared with
+% it for an equation becomes it, and two of them that are compared stay two,
+% with the equation recorded, as two universes of Rocq that are not flexible
+% do. The registry gives the number, so that a step that is undone gives
+% its universes back with what it registered.
+p_u_count [] N N.
+p_u_count (5 :: Ks) N M :- !, p_u_count Ks (s N) M.
+p_u_count (K :: Ks) N M :- p_u_count Ks N M.
+p_u_rigid_cells N [] [].
+p_u_rigid_cells N (5 :: Ks) (C :: Cs) :- !, p_u_pooled N C, p_u_rigid_cells (s N) Ks Cs.
+p_u_rigid_cells N (K :: Ks) (C :: Cs) :- p_u_rigid_cells N Ks Cs.
+p_u_pooled N (lv (Pool N)) :- p_u_pool Pool.
+p_u_fresh [] [] [] [].
+p_u_fresh (P :: K :: Ks) (C :: Cs) (K :: Rest) (p_site P K C :: Ss) :- C = lv Cell, p_u_fresh Ks Cs Rest Ss.
+p_u_wrap Kinds [] [].
+p_u_wrap Kinds (C :: Cs) (p_universe_command Kinds C :: Ds) :- p_u_wrap Kinds Cs Ds.
+p_u_record_all [].
+p_u_record_all (C :: Cs) :- u_record C, p_u_record_all Cs.
+
+% The universe that an argument's type gets for its level (e_refresh) is one
+% that nothing settles, as a `Type` that a command writes without a level is
+% (kind 5).
+% Standard commands can meet an algebraic type in the environment even
+% when the command writes no universe. Each execution of a tactical's
+% primitive has its own scope. A closed exact term needs no replay note.
+p_u_command C C :- flex C, !.
+p_u_command (p_universe_command Plan C) (p_universe_command Plan C) :- !.
+p_u_command C (p_universe_command [] C).
+p_u_fragment Scope (r_ref T []) (r_ref T []) :- !.
+p_u_fragment Scope R (p_note (pn_universes Scope) R).
+e_proof_refresh P K U :- e_proof_mode, p_u_sites Scope, !, p_u_link Scope, Scope = p_scope Written Sites Linked, p_u_site Sites P K U.
+p_u_link (p_scope Written Sites Linked) :- flex Linked, !, p_u_batches Bs, p_u_tail Bs Tail, Tail = p_batch Written Sites :: Later, Linked = 0.
+p_u_link Scope.
+p_u_site Sites P K U :- flex Sites, !, U = lv Cell, p_u_register (U :: []) (K :: []), Sites = p_site P K U :: Rest.
+p_u_site (p_site P K U :: Sites) P K U :- !.
+p_u_site (S :: Sites) P K U :- p_u_site Sites P K U.
+
+% The header predates every command. Within each execution merge just the
+% sites actually refreshed with its written markers, in syntax postorder.
+% Keep the physical registry for assigning distinct pool identities.
+p_u_ordered Batches [] [] :- flex Batches, !.
+p_u_ordered (p_batch Written Extra :: Bs) Cells Kinds :-
+    p_u_merge_sites Extra Written Ordered, p_u_emit Ordered Cells Kinds Tail Rest, p_u_ordered Bs Tail Rest.
+p_u_merge_sites Extra Ss Ss :- flex Extra, !.
+p_u_merge_sites (S :: More) Ss Ordered :- p_u_insert S Ss Next, p_u_merge_sites More Next Ordered.
+p_u_insert S [] (S :: []).
+p_u_insert (p_site P K U) (p_site Q J V :: Ss) (p_site P K U :: p_site Q J V :: Ss) :- P < Q, !.
+p_u_insert S (T :: Ts) (T :: Us) :- p_u_insert S Ts Us.
+p_u_emit [] Cs Ks Cs Ks.
+p_u_emit (p_site P K U :: Ss) (U :: Cs) (K :: Ks) Tail Rest :- p_u_emit Ss Cs Ks Tail Rest.
+
+% What the header settled of the statement.
+type p_u_header_type (list uconstraint -> tm -> tm -> o).
+p_u_header_type [] A A :- !.
+p_u_header_type Solved A B :- u_map_term (p_u_settled Solved) 0 0 A B.
+type p_u_settled (list uconstraint -> lvl -> A -> A -> lvl -> o).
+type p_u_settled_constraints (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type p_u_kept (uconstraint -> lvl -> lvl -> list uconstraint -> list uconstraint -> o).
+p_u_settled Solved (lv C) S S V :- flex C, e_u_solution C Solved W, !, p_u_settled Solved W S S V.
+p_u_settled Solved (ls L) S S (ls M) :- !, p_u_settled Solved L S S M.
+p_u_settled Solved (lu L) S S (lu M) :- !, p_u_settled Solved L S S M.
+p_u_settled Solved (lm L M) S S (lm A B) :- !, p_u_settled Solved L S S A, p_u_settled Solved M S S B.
+p_u_settled Solved L S S L.
+p_u_settled_constraints Solved [] [].
+p_u_settled_constraints Solved (uc_le L M :: Cs) Ds :-
+    p_u_settled Solved L 0 0 A, p_u_settled Solved M 0 0 B, p_u_kept (uc_le A B) A B Ds Es, p_u_settled_constraints Solved Cs Es.
+p_u_settled_constraints Solved (uc_eq L M :: Cs) Ds :-
+    p_u_settled Solved L 0 0 A, p_u_settled Solved M 0 0 B, p_u_kept (uc_eq A B) A B Ds Es, p_u_settled_constraints Solved Cs Es.
+p_u_kept C A B Ds Ds :- A == B, !.
+p_u_kept C A B (C :: Ds) Ds.
+
+% A command: its fragment is probed (p_hole_phase p_probe), and what it added
+% to the record is judged.
+type p_u_involved o.
+type p_u_probe (raw -> tm -> tm -> o).
+type p_u_checked (list uconstraint -> list uconstraint -> o).
+type p_u_read (list uconstraint -> o).
+type p_u_mark (list uconstraint -> o).
+type p_u_passed o.
+type p_u_new (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type p_u_sound (list uconstraint -> list uconstraint -> list uconstraint -> list uconstraint -> o).
+type p_u_set (list uconstraint -> list uconstraint -> list uconstraint -> list uconstraint -> list lvl -> o).
+type p_u_turn (list uconstraint -> list lvl -> list uconstraint -> list uconstraint -> uconstraint -> list lvl -> nat -> o).
+type p_u_under (list uconstraint -> list lvl -> nat -> o).
+type p_u_edge (list uconstraint -> nat -> nat -> o).
+type p_u_small (uconstraint -> list lvl -> list lvl -> o).
+type p_u_set_each (nat -> list lvl -> list lvl -> list lvl -> o).
+type p_u_is_small (lvl -> list lvl -> o).
+type p_u_set_one (nat -> nat -> list lvl -> list lvl -> o).
+type p_u_rest (list A -> list A -> list A -> list A -> o).
+type p_u_fixed (nat -> o).
+type p_u_model (list uconstraint -> o).
+type p_u_split (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type p_u_implied (nat -> list uconstraint -> list uconstraint -> o).
+p_u_involved :- u_parameters (U :: UV), !.
+p_u_involved :- e_u_cells Reg, e_absent (flex Reg).
+p_u_probe R A H :- p_u_involved, !, (p_phase p_probe => e_out R A H).
+p_u_probe R A H.
+% What a command recorded while it was read: the record at the end of its
+% passive pass. `exact` reads its term once more at once (the active pass),
+% and what that repeats is not read by Rocq, which reads a term once.
+p_u_mark Read :- flex Read, !, u_stream Q, u_flat Q Read [].
+p_u_mark Read.
+p_u_passed :- p_u_read Read, !, p_u_mark Read.
+p_u_passed.
+p_u_checked Before Read :- u_stream Q, u_flat Q After [], p_u_new Before After New, p_u_sound Before Read New After.
+p_u_new [] New New.
+p_u_new (B :: Bs) (C :: Cs) New :- p_u_new Bs Cs New.
+p_u_sound Before Read [] After :- !.
+p_u_sound Before Read New After :- p_u_new Before Read Judged, p_u_set Read Before Judged After [], p_u_model After.
+% Rocq makes a flexible universe that is put below Set equal to Set there and
+% then, and does not enforce `u <= Set` of one that is not flexible. So the
+% record is read in its order: Small has the cells that were put below
+% Type@{0} so far, and what a comparison puts below one of them, or below
+% Type@{0}, joins them when it is a cell and is refused when it is not, if
+% the comparison is one of this command (p_u_turn): one that it made while
+% it was read (Old has run out and Judged has not), or one that it made
+% after that and that Rocq makes too. What the second reading of `exact`
+% and the probe repeat Rocq does not compare: there the reading put the
+% level below a cell that is below Type@{0} now (p_u_under). What is left is
+% the type of an implicit argument that unification solved, which Rocq
+% compares where it solves it. A cast stays in the term (kernel: cast), so
+% every reading of a term compares what the cast compares, and nothing has
+% to be told apart from a cast that is gone.
+p_u_set Seen Old Judged [] Small.
+p_u_set Seen Old Judged (C :: Cs) Small :- p_u_small C Small Ls, !, p_u_turn Seen Small Old Judged C Ls Turn,
+    p_u_set_each Turn Ls Small More, p_u_rest Old Judged Older Later, p_u_set Seen Older Later Cs More.
+p_u_set Seen Old Judged (C :: Cs) Small :- p_u_rest Old Judged Older Later, p_u_set Seen Older Later Cs Small.
+p_u_turn Seen Small [] (J :: Js) C Ls 1 :- !.
+p_u_turn Seen Small [] [] C Ls 1 :- e_member (lv X) Ls, p_u_fixed X, e_absent (p_u_under Seen Small X), !.
+p_u_turn Seen Small Old Judged C Ls 0.
+p_u_under Seen Small X :- p_u_edge Seen X C, flex C, e_u_cell_member C Small, !.
+p_u_edge Seen X C :- e_member (uc_le K (lv C)) Seen, e_u_pieces K [] Ks, e_member (lv Y) Ks, Y == X.
+p_u_edge Seen X C :- e_member (uc_eq (lv Y) (lv C)) Seen, Y == X.
+p_u_edge Seen X C :- e_member (uc_eq (lv C) (lv Y)) Seen, Y == X.
+% What a comparison puts below Type@{0}: each level of the maximum on its
+% left (Rocq looks at each level of `max(u,v) <= Set`).
+p_u_small (uc_le L R) Small Ls :- p_u_is_small R Small, e_u_pieces L [] Ls.
+p_u_small (uc_eq L R) Small Ls :- p_u_is_small R Small, e_u_pieces L [] Ls.
+p_u_small (uc_eq R L) Small Ls :- p_u_is_small R Small, e_u_pieces L [] Ls.
+p_u_set_each Turn [] Small Small.
+p_u_set_each Turn (lv X :: Ls) Small More :- !, p_u_set_one Turn X Small Next, p_u_set_each Turn Ls Next More.
+p_u_set_each Turn (L :: Ls) Small More :- p_u_set_each Turn Ls Small More.
+p_u_is_small R Small :- R == lz, !.
+p_u_is_small (lv C) Small :- flex C, e_u_cell_member C Small.
+p_u_set_one 1 X Small Small :- p_u_fixed X, !, e_need fail "E-Set" [].
+p_u_set_one Turn X Small Small :- p_u_fixed X, !.
+p_u_set_one Turn X Small (lv X :: Small).
+p_u_rest (B :: Bs) Judged Bs Judged :- !.
+p_u_rest [] (J :: Js) [] Js :- !.
+p_u_rest [] [] [] [].
+p_u_fixed X :- e_absent (flex X), u_context Given, e_absent (u_global_judge (u_assume Given (e_u_holds (uc_le (lv X) lz)))).
+% The record with every universe a parameter: it must have a model, and it
+% must put a level below an expression where the kernel asked for that.
+p_u_model Pending :- u_parameters UV, u_context Given, e_u_resolve_defaults Pending Given Cs, e_u_initial UV 0 Map, e_length Count UV,
+    e_u_general_constraints 0 Given (u_state Count Map) S Context,
+    e_u_general_constraints 0 Cs S (u_state OutCount Final) Os,
+    p_u_split Os Atomic Algebraic, e_u_append Context Atomic Assumed,
+    e_need (e_u_consistent OutCount Assumed) "E-Universes" [],
+    e_need (p_u_implied OutCount Assumed Algebraic) "E-Algebraic" [].
+p_u_split [] [] [].
+p_u_split (uc_le L R :: Cs) As (uc_le L R :: Bs) :- e_absent (e_u_atomic R), !, p_u_split Cs As Bs.
+p_u_split (C :: Cs) (C :: As) Bs :- p_u_split Cs As Bs.
+p_u_implied Count Assumed [] :- !.
+p_u_implied Count Assumed Bs :- u_universal Count Assumed
+    (UV\ sigma Actual\ (u_subconstraints UV Bs Actual, e_u_hold_all Actual)).
+
+% The end of the proof. Inside the recording: the cells and the kinds as they
+% are now, and the record after the complete term was checked once more (a
+% proof without a universe has nothing to record).
+type p_u_gather (tm -> tm -> list lvl -> list nat -> list uconstraint -> o).
+type p_u_recheck (list lvl -> list lvl -> list uconstraint -> tm -> tm -> o).
+p_u_gather A M Cells Kinds All :-
+    p_u_header Header HeaderKinds, p_u_batches Batches, p_u_ordered Batches Cs Ks,
+    e_u_append Header Cs Cells, e_u_append HeaderKinds Ks Kinds,
+    u_parameters UV, u_stream Q, u_flat Q Before [], p_u_recheck UV Cells Before A M, u_flat Q Pending [], u_context Given, e_u_resolve_defaults Pending Given All.
+p_u_recheck [] [] [] A M :- !.
+p_u_recheck UV Cells Before A M :- check M A, !.
+p_u_recheck UV Cells Before A M.
+
+% Outside it: status 1 says that the universes could not be settled, and the
+% reports say why. The proof stands, and its Qed is refused.
+type p_u_finish (nat -> nat -> list uconstraint -> list uconstraint -> list lvl -> tm -> tm -> list lvl -> list nat -> list uconstraint -> nat -> nat -> list uconstraint -> tm -> tm -> tm -> o).
+type p_u_close (nat -> nat -> list uconstraint -> list uconstraint -> list lvl -> tm -> tm -> list lvl -> list nat -> list uconstraint -> nat -> list uconstraint -> tm -> tm -> tm -> o).
+type p_u_settle (nat -> nat -> list uconstraint -> list uconstraint -> list lvl -> list lvl -> list lvl -> tm -> tm -> list lvl -> list nat -> list uconstraint -> nat -> list uconstraint -> tm -> tm -> tm -> o).
+p_u_finish Mode Count Context Given UV A M Cells Kinds Cs 0 OutCount OutContext OutType OutBody OutMarks :-
+    p_u_close Mode Count Context Given UV A M Cells Kinds Cs OutCount OutContext OutType OutBody OutMarks, !.
+p_u_finish Mode Count Context Given UV A M Cells Kinds Cs 1 0 [] prop prop prop.
+p_u_close Mode 0 Context Given [] A M [] [] [] 0 [] A M (cst 0 []) :- !.
+% The universes that nothing settles (kind 5) are parameters from here on.
+p_u_close Mode Count Context Given UV A M Cells Kinds Cs OutCount OutContext OutType OutBody OutMarks :-
+    p_u_rigid Cells Kinds [] Rigid, e_length K Rigid,
+    e_u_bind K [] (RV\ p_u_settle Mode Count Context Given UV RV Rigid A M Cells Kinds Cs OutCount OutContext OutType OutBody OutMarks).
+% Tuv has the universes of the statement, so that the generalized form says
+% which parameters they are, and Tmk the levels of its markers as the header
+% settled them (p_u_marked): a cell of the statement that is left is a
+% universe of the theorem, as the universes that it names or that its `Type`s
+% made are. All are the universes in the order in which they were made, the
+% named ones first.
+p_u_marks Rigid RV (cst 0 Marked) :- p_u_marked Stated, !, u_map_levels (p_u_renamed Rigid RV) 0 0 Stated Marked.
+p_u_marks Rigid RV (cst 0 []).
+p_u_settle Mode Count Context Given UV RV Rigid A M Cells Kinds Cs OutCount OutContext OutType OutBody OutMarks :-
+    p_u_named UV Tuv,
+    u_map_terms (p_u_renamed Rigid RV) 0 0 (A :: M :: []) (A1 :: M1 :: []),
+    p_u_renamed_constraints Rigid RV Cs Cs1, u_map_levels (p_u_renamed Rigid RV) 0 0 Cells Cells1,
+    e_u_append UV RV UV1, p_u_order Mode UV Cells1 Kinds All AllKinds,
+    e_u_minimize 0 Given UV1 AllKinds All Cs1 Solved,
+    e_u_initial UV1 0 Map, e_length Count1 UV1,
+    p_u_marks Rigid RV Tmk,
+    (e_u_solved Solved => (u_map_terms (e_u_general 0) (u_state Count1 Map) S (A1 :: M1 :: Tuv :: Tmk :: []) Raw,
+        e_u_general_constraints 0 Cs1 S (u_state Count2 Final) Obligations)),
+    e_u_reorder 0 All AllKinds Final Count2 Raw Obligations (A2 :: M2 :: T2 :: K2 :: []) Ordered,
+    u_map_term p_u_note [] P0 A2 A3, u_map_term p_u_note P0 Public T2 T3,
+    p_u_perm Count2 0 Public 0 Perm OutCount,
+    u_map_term (p_u_exposed Ordered Public Perm) 0 0 A2 OutType, u_map_term (p_u_exposed_tidy Ordered Public Perm) 0 0 M2 OutBody,
+    u_map_term (p_u_exposed Ordered Public Perm) 0 0 K2 OutMarks,
+    p_u_exposed_constraints Ordered Public Perm Ordered Os,
+    p_u_context Mode Count Context OutCount Os OutContext.
+
+type p_u_rigid (list lvl -> list nat -> list lvl -> list lvl -> o).
+type p_u_named (list lvl -> tm -> o).
+type p_u_renamed (list lvl -> list lvl -> lvl -> A -> A -> lvl -> o).
+type p_u_renamed_constraints (list lvl -> list lvl -> list uconstraint -> list uconstraint -> o).
+type p_u_order (nat -> list lvl -> list lvl -> list nat -> list lvl -> list nat -> o).
+type p_u_ones (list lvl -> list nat -> list nat -> o).
+p_u_rigid [] [] Acc Rigid :- rev Acc [] Rigid.
+p_u_rigid (lv C :: Cs) (5 :: Ks) Acc Rigid :- e_absent (e_u_cell_member C Acc), !, p_u_rigid Cs Ks (lv C :: Acc) Rigid.
+p_u_rigid (C :: Cs) (K :: Ks) Acc Rigid :- p_u_rigid Cs Ks Acc Rigid.
+p_u_named [] prop.
+p_u_named (U :: UV) (prod (typ U) (x\ T)) :- p_u_named UV T.
+p_u_renamed Rigid RV (lv C) S S V :- e_u_assoc (lv C) Rigid RV V, !.
+p_u_renamed Rigid RV (ls L) S S (ls M) :- !, p_u_renamed Rigid RV L S S M.
+p_u_renamed Rigid RV (lu L) S S (lu M) :- !, p_u_renamed Rigid RV L S S M.
+p_u_renamed Rigid RV (lm L M) S S (lm A B) :- !, p_u_renamed Rigid RV L S S A, p_u_renamed Rigid RV M S S B.
+p_u_renamed Rigid RV L S S L.
+p_u_renamed_constraints Rigid RV [] [].
+p_u_renamed_constraints Rigid RV (uc_le L M :: Cs) (uc_le A B :: Ds) :-
+    p_u_renamed Rigid RV L 0 0 A, p_u_renamed Rigid RV M 0 0 B, p_u_renamed_constraints Rigid RV Cs Ds.
+p_u_renamed_constraints Rigid RV (uc_eq L M :: Cs) (uc_eq A B :: Ds) :-
+    p_u_renamed Rigid RV L 0 0 A, p_u_renamed Rigid RV M 0 0 B, p_u_renamed_constraints Rigid RV Cs Ds.
+p_u_order 0 UV Cells Kinds Cells Kinds :- !.
+p_u_order Mode UV Cells Kinds All AllKinds :- e_u_append UV Cells All, p_u_ones UV Kinds AllKinds.
+p_u_ones [] Kinds Kinds.
+p_u_ones (U :: UV) Kinds (1 :: Ks) :- p_u_ones UV Kinds Ks.
+
+% The universes of the theorem are those of its statement: the parameters
+% that it names or that its `Type`s made, and those that are in the type
+% after the cells are settled. Perm gives each of them its place among them.
+type p_u_note (lvl -> list nat -> list nat -> lvl -> o).
+type p_u_in (nat -> list nat -> o).
+type p_u_perm (nat -> nat -> list nat -> nat -> list lvl -> nat -> o).
+p_u_note (lp I) S S (lp I) :- p_u_in I S, !.
+p_u_note (lp I) S (I :: S) (lp I) :- !.
+p_u_note (lu L) S T (lu L) :- !, p_u_note L S T L.
+p_u_note (lm L M) S U (lm L M) :- !, p_u_note L S T L, p_u_note M T U M.
+p_u_note L S S L.
+p_u_in I (J :: Js) :- I == J, !.
+p_u_in I (J :: Js) :- p_u_in I Js.
+p_u_perm 0 I Public Next [] Next :- !.
+p_u_perm (s N) I Public Next (lp Next :: Ls) Out :- p_u_in I Public, !, p_u_perm N (s I) Public (s Next) Ls Out.
+p_u_perm (s N) I Public Next (lz :: Ls) Out :- p_u_perm N (s I) Public Next Ls Out.
+
+% Any other universe is private to the proof. Its least level is the maximum
+% of what the constraints put below it, with the private universes among
+% those replaced in the same way (one that is being replaced is skipped: a
+% cycle of constraints that are not strict makes its universes equal). One
+% that an equation makes equal to a level is that level.
+type p_u_value (list uconstraint -> list nat -> list nat -> nat -> lvl -> o).
+type p_u_same (uconstraint -> nat -> lvl -> o).
+type p_u_bounds (list uconstraint -> list uconstraint -> list nat -> list nat -> nat -> list lvl -> list lvl -> o).
+type p_u_below (uconstraint -> nat -> lvl -> o).
+type p_u_plain (list uconstraint -> list nat -> list nat -> lvl -> lvl -> o).
+type p_u_plain_max (list uconstraint -> list nat -> list nat -> lvl -> lvl -> lvl -> o).
+type p_u_plain_other (list uconstraint -> list nat -> list nat -> lvl -> lvl -> lvl -> o).
+type p_u_add (lvl -> list lvl -> list lvl -> o).
+type p_u_join (list lvl -> lvl -> o).
+type p_u_exposed (list uconstraint -> list nat -> list lvl -> lvl -> A -> A -> lvl -> o).
+type p_u_exposed_tidy (list uconstraint -> list nat -> list lvl -> lvl -> A -> A -> lvl -> o).
+type p_u_tidy (lvl -> lvl -> o).
+type p_u_exposed_constraints (list uconstraint -> list nat -> list lvl -> list uconstraint -> list uconstraint -> o).
+p_u_value Os Public Seen I V :- e_member C Os, p_u_same C I L, p_u_plain Os Public (I :: Seen) L V, !.
+p_u_value Os Public Seen I V :- p_u_bounds Os Os Public (I :: Seen) I [] Bs, p_u_join Bs V.
+p_u_same (uc_eq L (lp J)) I L :- J == I.
+p_u_same (uc_eq (lp J) L) I L :- J == I.
+p_u_bounds All [] Public Seen I Acc Acc.
+p_u_bounds All (C :: Cs) Public Seen I Acc Out :-
+    p_u_below C I L, p_u_plain All Public Seen L M, !, p_u_add M Acc More, p_u_bounds All Cs Public Seen I More Out.
+p_u_bounds All (C :: Cs) Public Seen I Acc Out :- p_u_bounds All Cs Public Seen I Acc Out.
+p_u_below (uc_le L (lp J)) I L :- J == I.
+p_u_below (uc_eq L (lp J)) I L :- J == I.
+p_u_below (uc_eq (lp J) L) I L :- J == I.
+p_u_plain Os Public Seen (lp I) (lp I) :- p_u_in I Public, !.
+p_u_plain Os Public Seen (lp I) V :- !, e_absent (p_u_in I Seen), p_u_value Os Public Seen I V.
+p_u_plain Os Public Seen (lu L) W :- !, p_u_plain Os Public Seen L M, p_u_up M W.
+p_u_plain Os Public Seen (lm L M) V :- !, p_u_plain_max Os Public Seen L M V.
+p_u_plain Os Public Seen L L.
+p_u_plain_max Os Public Seen L M V :- p_u_plain Os Public Seen L A, !, p_u_plain_other Os Public Seen M A V.
+p_u_plain_max Os Public Seen L M V :- p_u_plain Os Public Seen M V.
+p_u_plain_other Os Public Seen M A (lm A B) :- p_u_plain Os Public Seen M B, !.
+p_u_plain_other Os Public Seen M A A.
+p_u_add M Acc Acc :- (M == lz; e_member N Acc, N == M), !.
+p_u_add M Acc (M :: Acc).
+p_u_join [] lz.
+p_u_join (L :: []) L :- !.
+p_u_join (L :: Ls) (lm L M) :- p_u_join Ls M.
+p_u_exposed Os Public Perm L S S M :- p_u_plain Os Public [] L V, u_sublevel Perm V M.
+% A level of the term is written without what it repeats: max(u,u) is u, and
+% max(u,u+1) is u+1. The statement keeps the levels that were written.
+p_u_exposed_tidy Os Public Perm L S S M :- p_u_plain Os Public [] L V, p_u_tidy V W, u_sublevel Perm W M.
+p_u_tidy L M :- p_u_push L P, e_u_pieces P [] Ps, e_u_sup Ps [] Sup, e_u_maximum Sup M, !.
+p_u_tidy L L.
+p_u_exposed_constraints Os Public Perm [] [].
+p_u_exposed_constraints Os Public Perm (uc_le L M :: Cs) (uc_le A B :: Ds) :-
+    p_u_exposed Os Public Perm L 0 0 A, p_u_exposed Os Public Perm M 0 0 B, p_u_exposed_constraints Os Public Perm Cs Ds.
+p_u_exposed_constraints Os Public Perm (uc_eq L M :: Cs) (uc_eq A B :: Ds) :-
+    p_u_exposed Os Public Perm L 0 0 A, p_u_exposed Os Public Perm M 0 0 B, p_u_exposed_constraints Os Public Perm Cs Ds.
+
+% What the theorem needs of its universes. A successor of a maximum is the
+% maximum of the successors, so that each constraint has one level on its
+% left. A closed context must have them all: Rocq says that the constraints
+% are not implied by the ones declared.
+type p_u_context (nat -> nat -> list uconstraint -> nat -> list uconstraint -> list uconstraint -> o).
+type p_u_pushed (list uconstraint -> list uconstraint -> o).
+type p_u_push (lvl -> lvl -> o).
+type p_u_up (lvl -> lvl -> o).
+p_u_context 1 Count Context OutCount Os OutContext :- !,
+    (e_at 0 => e_need (e_u_final_context 1 Count Context OutCount Os OutContext) "E-Declared" []).
+p_u_context Mode Count Context OutCount Os OutContext :- p_u_pushed Os Ps,
+    (e_at 0 => e_need (e_u_final_context Mode Count Context OutCount Ps OutContext) "E-Universes" []).
+p_u_pushed [] [].
+p_u_pushed (uc_le L M :: Cs) (uc_le A B :: Ds) :- p_u_push L A, p_u_push M B, p_u_pushed Cs Ds.
+p_u_pushed (uc_eq L M :: Cs) (uc_eq A B :: Ds) :- p_u_push L A, p_u_push M B, p_u_pushed Cs Ds.
+p_u_push (lu L) M :- !, p_u_push L K, p_u_up K M.
+p_u_push (lm L M) (lm A B) :- !, p_u_push L A, p_u_push M B.
+p_u_push L L.
+p_u_up (lm A B) (lm C D) :- !, p_u_up A C, p_u_up B D.
+p_u_up L M :- u_successor L M.
+
+type p_refold_product (tm -> tm -> (tm -> tm) -> o).
+type p_argument_hints (tm -> phints -> o).
+type p_product (tm -> tm -> (tm -> tm) -> o).
+% A silent product test is needed when searching constructor alternatives.
+% Failed alternatives must not print a diagnostic before a later one works.
+p_product T D B :- e_absent (flex T), whnf T W,
+    e_absent (flex W), W = prod D B.

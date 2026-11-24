@@ -1,0 +1,1230 @@
+% LoL ALPHA1 surface elaboration. The result is a proposal, never admission.
+% All reduction and conversion below call the kernel. No host typing exists.
+import lol.hol.kernel.
+
+kind raw type.
+kind rmode type.
+type r_implicit (list tm -> rmode).
+type r_explicit rmode.
+type r_given (tm -> rmode).
+type r_block (list tm -> tm -> rmode).
+type r_pending rmode.
+type r_pending_block (tm -> rmode).
+kind rbranch type.
+kind rreturn type.
+kind rfamily type.
+type rf_any rfamily.
+type rf_named (nat -> nat -> rfamily).
+type rf_pattern (nat -> nat -> nat -> rfamily).
+kind rposition type.
+type r_at (nat -> raw -> raw).
+% Proof-only binder names are raw metadata, never a typing judgment.
+type p_named (string -> tm -> raw -> raw).
+% The term of a proof keeps the name of a binder that is named in it: what
+% the binder binds starts with a `let` of this value, which the host reads
+% as the name of the binder and leaves out (e_marked).
+type p_mark (string -> tm).
+type e_marked (string -> tm -> tm -> o).
+% p_note N R: what a tactic says of the context of the rest of the proof R
+% (proof.hol: a hypothesis that is gone, one whose type changed, where a new
+% one stands). It is no part of the term.
+kind pnote type.
+type p_note (pnote -> raw -> raw).
+type p_intro_lam (string -> (tm -> pnote) -> (tm -> raw) -> raw).
+type e_note_policy (pnote -> o -> o).
+type e_proof_note (pnote -> o -> o).
+type p_resolve (string -> raw -> raw).
+type p_missing (string -> raw).
+type p_capture (tm -> raw).
+type r_ref (tm -> list rmode -> raw).
+type r_proj (nat -> nat -> raw -> raw).
+type r_hole (nat -> raw -> tm -> tm -> raw).
+type r_blank (nat -> raw).
+% The raw request, expected type and Core answer stay separate. Proof mode
+% handles unfinished cells through the explicit e_hole_policy hook.
+type e_finish_hole (nat -> raw -> tm -> tm -> o).
+type e_unresolved (nat -> raw -> tm -> tm -> o).
+type r_apps (raw -> list raw -> raw).
+type r_pi (raw -> (tm -> raw) -> raw).
+type r_lam (raw -> (tm -> raw) -> raw).
+type r_untyped ((tm -> raw) -> raw).
+% r_open B: the `let` that the expected type is written as, opened as a local
+% definition whose variable B takes. A tactic brings a local definition back
+% under a match that way (tactics_elim.hol).
+type r_open ((tm -> raw) -> raw).
+type r_let (raw -> raw -> (tm -> raw) -> raw).
+type r_letfresh (lvl -> raw -> (tm -> raw) -> raw).
+type r_letinfer (raw -> (tm -> raw) -> raw).
+% r_cut D R B: a `let` whose body does not see the value of its variable, as
+% the rest of a proof does not see the proof of what `assert` states (Rocq).
+type r_cut (raw -> raw -> (tm -> raw) -> raw).
+type r_annot (raw -> raw -> raw).
+type r_abs ((tm -> raw) -> raw).
+type r_match (raw -> rfamily -> rreturn -> list rbranch -> raw).
+type rr_none rreturn.
+type rr_some (raw -> rreturn).
+type rr_auto (raw -> rreturn).
+type r_wild (raw -> raw).
+type e_return_auto (tm -> tm -> raw -> tm -> o).
+type e_return_auto_head (tm -> tm -> raw -> tm -> o).
+type rb_named (nat -> nat -> nat -> raw -> rbranch).
+type rb_other (raw -> list raw -> rbranch).
+type r_fixed (nat -> rposition).
+type r_search (list nat -> rposition).
+kind rdefault type.
+type rd_bind ((tm -> rdefault) -> rdefault).
+type rd_fix (((nat -> tm) -> rdefault) -> rdefault).
+type rd_pair (list tm -> tm -> rdefault).
+type r_fix (nat -> list rposition -> list raw -> ((nat -> tm) -> list raw) -> list rdefault -> raw).
+
+type e_at (nat -> o).
+type e_need (o -> string -> list tm -> o).
+% Proof tacticals may suppress diagnostics from rejected speculative branches.
+type e_silent_failure o.
+type e_absent (o -> o).
+type e_in (raw -> tm -> tm -> o).
+type e_out (raw -> tm -> tm -> o).
+type e_kind (raw -> tm -> tm -> o).
+type e_head (raw -> tm -> tm -> list rmode -> o).
+type e_args (tm -> tm -> list rmode -> list raw -> tm -> tm -> o).
+type e_arrow (tm -> tm -> (tm -> tm) -> o).
+type e_done (tm -> o).
+type e_done_all (list tm -> o).
+kind rphase type.
+type rp_default rphase.
+type rp_finish rphase.
+type e_raw_done (raw -> o).
+type e_raw (rphase -> raw -> o).
+type e_raw_all (rphase -> list raw -> o).
+type e_types (list raw -> list tm -> o).
+type e_bodies (list raw -> list tm -> list tm -> o).
+type e_choices (list rposition -> list tm -> list nat -> o).
+type e_choose (rposition -> tm -> nat -> o).
+type e_member (A -> list A -> o).
+type e_struct (tm -> nat -> o).
+type e_struct_head (tm -> nat -> o).
+type e_case (raw -> rfamily -> rreturn -> list rbranch -> tm -> tm -> o).
+type e_family (rfamily -> nat -> nat -> list tm -> o).
+type e_length (nat -> list A -> o).
+type e_scrutinee_type (raw -> tm -> tm -> o).
+type e_return (tm -> tm -> raw -> tm -> o).
+type e_return_head (tm -> tm -> raw -> tm -> o).
+type e_motive (rreturn -> tm -> tm -> list tm -> tm -> tm -> tm -> o).
+type e_abstract (tm -> tm -> list tm -> list tm -> tm -> tm -> o).
+type e_abstract_head (tm -> tm -> list tm -> list tm -> tm -> tm -> o).
+type e_copy (tm -> list tm -> list tm -> tm -> o).
+type e_lookup (tm -> list tm -> list tm -> tm -> o).
+type e_copy_all (list tm -> list tm -> list tm -> list tm -> o).
+type e_same (tm -> tm -> o).
+type e_same_all (list tm -> list tm -> o).
+type e_branch_slots (list (list mark) -> list tm -> o).
+type e_branches (nat -> nat -> list lvl -> nat -> list tm -> tm -> list rbranch -> list rbranch -> list (list mark) -> list tm -> list raw -> o).
+type e_remaining (nat -> nat -> list lvl -> nat -> nat -> list tm -> tm -> list (list mark) -> list rbranch -> list tm -> raw -> list raw -> o).
+type e_branch_one (nat -> nat -> nat -> list lvl -> nat -> list tm -> tm -> raw -> tm -> list raw -> list raw -> o).
+type e_branch_raw (tm -> raw -> raw -> list raw -> list raw -> o).
+type e_instance (tm -> raw -> raw -> o).
+type e_instance_head (tm -> raw -> raw -> o).
+type e_instances (list rbranch -> list raw -> o).
+type e_branch (nat -> tm -> tm -> tm -> raw -> tm -> o).
+type e_branch_head (nat -> tm -> tm -> tm -> raw -> tm -> o).
+type e_wildcard (list rbranch -> o).
+type e_missing_branch (nat -> nat -> nat -> list (list mark) -> list rbranch -> o).
+type e_named_branch (nat -> nat -> nat -> list rbranch -> o).
+type e_query (raw -> tm -> tm -> o).
+type e_definition (raw -> raw -> tm -> tm -> o).
+type e_annotation_hole (raw -> tm -> tm -> o).
+type e_domain (raw -> tm -> tm -> o).
+
+% ALPHA2 opts into these narrow hooks with a local e_proof_mode assumption.
+% Batch elaboration has no such assumption. No general term dispatch changes.
+type e_proof_mode o.
+type e_hole_policy (nat -> raw -> tm -> tm -> o).
+type e_proof_hole (nat -> raw -> tm -> tm -> o).
+type e_proof_finish (nat -> raw -> tm -> tm -> o).
+type e_name_policy (string -> tm -> o -> o).
+type e_proof_name (string -> tm -> o -> o).
+type e_proof_resolve (string -> raw -> raw -> o).
+type e_fix_policy (nat -> list rposition -> list raw -> ((nat -> tm) -> list raw) -> list rdefault -> tm -> tm -> o).
+type e_proof_fix (nat -> list rposition -> list raw -> ((nat -> tm) -> list raw) -> list rdefault -> tm -> tm -> o).
+
+
+% The position is a source-node number. Haskell only maps it back to a span.
+e_need G R Ts :- G, !.
+e_need G R Ts :- e_silent_failure, !, fail.
+e_need G R Ts :- e_at P, shown_all Ts Ns, print (rep R (cst P [] :: Ns)), fail.
+
+% Kernel-labelled diagnostics carry Core arguments only. A source-position
+% marker would otherwise be displayed as an unrelated global constant.
+type e_kernel_need (o -> string -> list tm -> o).
+e_kernel_need G R Ts :- G, !.
+e_kernel_need G R Ts :- e_silent_failure, !, fail.
+e_kernel_need G R Ts :- expect fail (rep R Ts).
+e_absent G :- G, !, fail.
+e_absent G.
+e_member X (X :: Xs).
+e_member X (Y :: Xs) :- e_member X Xs.
+
+% A selected proof policy commits before it runs: rejection must not fall
+% back to the batch success clause. Calls occur only at the marked forms.
+e_hole_policy P R A H :- e_proof_mode, !, e_proof_hole P R A H.
+e_hole_policy P R A H.
+e_name_policy Name X G :- e_proof_mode, !, e_proof_name Name X G.
+e_name_policy Name X G :- G.
+e_note_policy Note G :- e_proof_mode, !, e_proof_note Note G.
+e_note_policy Note G :- G.
+% What a named binder of a proof binds: the mark of the name, then the term.
+e_marked Name M N :- e_proof_mode, !, M = letin (p_mark Name) prop (y\ N).
+e_marked Name M M.
+
+
+e_query R M A :- e_in R M A, e_raw_done R, e_need (e_done M, e_done A) "E-Unsolved" (M :: A :: []).
+% A whole annotation hole has no sort to guess. Its body fixes the term
+% by unification, then its sort is checked in this same continuation.
+e_annotation_hole (r_at P R) A S :- !, e_annotation_hole R A S.
+e_annotation_hole (r_hole P R A S) A S.
+e_definition (r_at P R) T A M :- !, (e_at P => e_definition R T A M).
+e_definition R T A M :- e_annotation_hole R A S, !, e_out T A M,
+    e_need (e_done A) "E-Unsolved" (A :: []),
+    e_need (infer A S, whnf S W, is_sort W) "E-Unify" (A :: []),
+    e_raw_done R, e_raw_done T, e_need (e_done M) "E-Unsolved" (M :: []).
+e_definition R T A M :- e_kind R A _, e_out T A M, e_raw_done R, e_raw_done T, e_need (e_done A, e_done M) "E-Unsolved" (A :: M :: []).
+
+% [E-Const], [E-App]. Explicit arguments precede result-type comparison.
+e_in R M A :- flex R, !, e_need fail "E-Unsolved" [].
+e_in (r_at P R) M A :- !, (e_at P => e_in R M A).
+e_in (r_hole P R H A) H A :- !, e_hole_policy P R A H.
+e_in (p_intro_lam Name Note B) M A :- !, e_in (r_untyped (x\ p_named Name x (p_note (Note x) (B x)))) M A.
+e_in (p_named Name X R) M A :- !, e_marked Name M N, e_name_policy Name X (e_in R N A).
+e_in (p_note Note R) M A :- !, e_note_policy Note (e_in R M A).
+e_in (p_resolve Name Fallback) M A :- !,
+    e_proof_resolve Name Fallback R, e_in R M A.
+e_in (p_missing Name) M A :- !, e_need fail "P-Name" [].
+e_in (r_ref C Ms) M A :- !, application_head C T, e_args C T Ms [] M A.
+e_in (r_proj B J S) (proj B J R) A :- !, e_in S R T,
+    e_kernel_need (record_type B J R T A) "T-Proj" (R :: T :: []).
+e_in (r_apps H Rs) M A :- !, e_head H F T Ms, e_args F T Ms Rs M A.
+e_in (r_pi D B) (prod A F) S :- !, e_kind D A S1, (pi x\ var_type x A => e_kind (B x) (F x) S2), prod_sort S1 S2 S.
+e_in (r_lam D B) (lam A F) (prod A T) :- !, e_kind D A _, pi x\ var_type x A => e_in (B x) (F x) (T x).
+e_in (r_untyped B) M A :- !, e_need fail "E-NeedAnnotation" [].
+e_in (r_open B) M A :- !, e_need fail "E-NeedAnnotation" [].
+% A cast `(t : T)` stays in the term, as Rocq keeps it (kernel: cast), so
+% that every check of the term compares the type of t with T where the
+% reading compared them.
+e_in (r_annot R D) (cast M A) A :- !, e_kind D A _, e_out R A M.
+e_in (r_let D R B) (letin M A F) T :- !, e_kind D A _, e_out R A M, (pi x\ var_type x A => var_body x M => e_in (B x) (F x) (G x)), T = G M.
+e_in (r_letinfer R B) (letin M A F) T :- !, e_let_value R M A, (pi x\ var_type x A => var_body x M => e_in (B x) (F x) (G x)), T = G M.
+e_in (r_letfresh U R B) (letin M A F) T :- !, e_let_at U R M A, (pi x\ var_type x A => var_body x M => e_in (B x) (F x) (G x)), T = G M.
+e_in (r_cut D R B) (letin M A F) T :- !, e_kind D A _, e_out R A M, (pi x\ var_type x A => e_in (B x) (F x) (G x)), T = G M.
+e_in (r_match R Family rr_none Bs) M A :- !, e_need fail "E-NeedReturn" [].
+e_in (r_match R Family Ret Bs) M A :- !, e_case R Family Ret Bs A M.
+% A `fix` is complete where it ends, and so are the types of the variables
+% around it, because the oracle judges a complete term under complete
+% hypotheses. Ds has the holes of block parameters that were made before that
+% end: those that unification has left get their default there.
+e_in (r_fix K Choices Types Bodies Ds) X A :- !,
+    e_fix_policy K Choices Types Bodies Ds X A.
+e_fix_policy K Choices Types Bodies Ds X A :- e_proof_mode, !,
+    e_proof_fix K Choices Types Bodies Ds X A.
+e_fix_policy K Choices Types Bodies Ds X A :-
+    e_types Types Fs,
+    (pi f\ (pi j\ pi t\ (var_type (f j) t :- nth j Fs t)) => e_bodies (Bodies f) Fs (Ts f)),
+    e_defaults Ds,
+    e_need (e_done_all Fs, pi f\ e_done_all (Ts f)) "E-Unsolved" [],
+    e_need (e_choices Choices Fs Ns, X = fix K Ns Fs Ts, e_guard X) "F-Guard" [],
+    nth K Fs A.
+
+e_out R A M :- flex R, !, e_need fail "E-Unsolved" [].
+e_out (r_at P R) A M :- !, (e_at P => e_out R A M).
+e_out (r_hole P R H A) A H :- !, e_hole_policy P R A H.
+e_out (p_intro_lam Name Note B) T M :- flex T, !, e_in (p_intro_lam Name Note B) M T.
+e_out (p_intro_lam Name Note B) T (lam A F) :- !, e_arrow T A G,
+    pi x\ var_type x A => e_out_intro Name (Note x) x (B x) (G x) (F x).
+type e_out_intro (string -> pnote -> tm -> raw -> tm -> tm -> o).
+e_out_intro Name Note X R T M :- e_marked Name M N, e_name_policy Name X (e_note_policy Note (e_out R T N)).
+e_out (p_named Name X R) A M :- !, e_marked Name M N, e_name_policy Name X (e_out R A N).
+e_out (p_note Note R) A M :- !, e_note_policy Note (e_out R A M).
+e_out (p_resolve Name Fallback) A M :- !,
+    e_proof_resolve Name Fallback R, e_out R A M.
+e_out (p_missing Name) A M :- !, e_need fail "P-Name" [].
+e_out R T M :- flex T, (R = r_lam D B; R = r_untyped B), !, e_in R M T.
+e_out (r_untyped B) T (lam A F) :- !, e_arrow T A G, pi x\ var_type x A => e_out (B x) (G x) (F x).
+e_out (r_open B) T (letin V A F) :- !, e_need (e_absent (flex T), T = letin V A G) "E-NotFunction" (T :: []), pi x\ var_type x A => var_body x V => e_out (B x) (G x) (F x).
+e_out (r_lam D B) T M :- !, e_arrow T Expected G, e_typed_lambda D B Expected G M.
+e_out (r_let D R B) T (letin M A F) :- !, e_kind D A _, e_out R A M, pi x\ var_type x A => var_body x M => e_out (B x) T (F x).
+e_out (r_letinfer R B) T (letin M A F) :- !, e_let_value R M A, pi x\ var_type x A => var_body x M => e_out (B x) T (F x).
+e_out (r_letfresh U R B) T (letin M A F) :- !, e_let_at U R M A, pi x\ var_type x A => var_body x M => e_out (B x) T (F x).
+e_out (r_cut D R B) T (letin M A F) :- !, e_kind D A _, e_out R A M, pi x\ var_type x A => e_out (B x) T (F x).
+e_out (r_match R Family Ret Bs) A M :- !, e_case R Family Ret Bs A M.
+e_out R A M :- e_in R V B, e_refresh B A, e_need (e_fit V B A M) "E-Unify" (B :: A :: []).
+
+% Keep the written domain of a bidirectionally checked lambda. If it does
+% not convert, infer the body under the written domain and adapt the whole
+% function. The expected codomain supplies omitted inner binder annotations.
+type e_typed_lambda (raw -> (tm -> raw) -> tm -> (tm -> tm) -> tm -> o).
+e_typed_lambda D B Expected G (lam A F) :-
+    (e_silent_failure => e_domain D Expected A), (A == Expected; e_default_model), !,
+    pi x\ var_type x A => e_out (B x) (G x) (F x).
+e_typed_lambda D B Expected G M :-
+    e_kind D A _,
+    (pi x\ var_type x A => e_lambda_body (B x) (G x) (F x) (T x)),
+    e_need (e_fit (lam A F) (prod A T) (prod Expected G) M) "E-Unify" [prod A T, prod Expected G].
+
+type e_lambda_body (raw -> tm -> tm -> tm -> o).
+e_lambda_body (r_at P B) H V T :- !, (e_at P => e_lambda_body B H V T).
+e_lambda_body (p_named Name X B) H M T :- !, e_marked Name M V, e_name_policy Name X (e_lambda_body B H V T).
+e_lambda_body (p_note Note B) H M T :- !, e_note_policy Note (e_lambda_body B H M T).
+e_lambda_body (r_lam D B) H (lam A F) (prod A T) :- e_function H E G, !,
+    e_kind D A _, pi x\ var_type x A => e_lambda_body (B x) (G x) (F x) (T x).
+e_lambda_body (r_untyped B) H (lam A F) (prod A T) :- !, e_arrow H A G,
+    sort_of "T-Lam" A _, pi x\ var_type x A => e_lambda_body (B x) (G x) (F x) (T x).
+e_lambda_body B H V T :- e_in B V T.
+
+% At product types try ordinary cumulativity first. On failure, elaborate
+% the bound argument at the inferred domain and the applied body at the
+% expected codomain. application_type also computes a template's lowered
+% result at this argument. The ground kernel checks the resulting lambda.
+type e_fit (tm -> tm -> tm -> tm -> o).
+type e_function (tm -> tm -> (tm -> tm) -> o).
+type e_product_fit (tm -> tm -> tm -> tm -> tm -> (tm -> tm) -> tm -> o).
+type e_applied (tm -> tm -> tm -> o).
+type e_default_model o.
+e_function T D G :- template_rigid T, whnf T W, template_rigid W, W = prod D G.
+e_fit V B A V :- B == A, !.
+e_fit V B A M :- e_function A D Y, e_function B E Z, !, e_product_fit V B A E D Y M.
+e_fit V B A V :- sub B A.
+e_product_fit V B A E D Y V :- sub B A, e_default_model, !.
+e_product_fit V B A E D Y (lam D F) :- pi x\ sigma a\ sigma t\ sigma u\ var_type x D =>
+    (e_fit x D E a, application_type V a t, e_applied V a u, e_fit u t (Y x) (F x)).
+e_applied V X M :- template_rigid V, V = lam A F, !, M = F X.
+e_applied V X (app V X).
+e_default_model :- u_recording, !, u_stream Q, u_flat Q Recorded [], u_context Given,
+    e_u_resolve_defaults Recorded Given Cs, e_u_choice_set Cs Given All,
+    e_u_general_constraints 0 All (u_state 0 []) (u_state K Map) Constraints,
+    e_u_consistent K Constraints.
+e_default_model.
+% A hole for the type of an implicit argument, when the inferred type B
+% is an arity whose level
+% is not one level (a successor, a maximum of two levels or a closed level
+% above Type@{0}; the maximum of a level with itself is that level),
+% gets that arity with a universe of its own for the level, as Rocq makes one
+% (refresh_universes): the comparison that follows puts the level below it.
+% The universe is the spare one that the host made for the source node (kind
+% 6 + the number of the node). A proof makes one where it is needed
+% (e_proof_refresh). A declaration that names no universe is read with a
+% list of the host (e_u_found) that ends in a variable: a node that has no
+% spare universe gets a universe of the reading for the time being (the
+% function of e_u_bind at the number of the node, which no unification makes
+% another universe) and is put on that list, so that the reading goes on as
+% it would with the spare one and meets every such node. Such a reading
+% stops when the term is read (e_u_stopped), and the host reads the
+% declaration again with a spare universe for each node of the list. Without
+% that list the node is reported: the host refuses it for a declaration that
+% names its universes.
+type e_refresh (tm -> tm -> o).
+type e_refresh_recorded (tm -> tm -> o).
+type e_u_pool ((nat -> nat) -> o).
+type e_u_found (list nat -> o).
+type e_u_note (nat -> list nat -> o).
+type e_u_stopped (o -> o).
+type e_u_close (list nat -> o).
+type e_u_listed o.
+e_u_note P Found :- flex Found, !, Found = P :: Rest.
+e_u_note P (P :: Found) :- !.
+e_u_note P (Q :: Found) :- e_u_note P Found.
+e_u_stopped G :- e_u_found Found, e_absent (flex Found), !, e_u_close Found, G.
+e_u_close Found :- flex Found, !, Found = [].
+e_u_close [] :- !.
+e_u_close (P :: Found) :- e_u_close Found.
+e_u_listed :- e_u_found Found, !, e_u_close Found.
+e_u_listed.
+type e_proof_refresh (nat -> nat -> lvl -> o).
+type e_let_value (raw -> tm -> tm -> o).
+type e_let_at (lvl -> raw -> tm -> tm -> o).
+type e_algebraic (tm -> (lvl -> tm) -> o).
+% Keep all product domains. Only the final algebraic sort gets a fresh level.
+e_let_at U R M A :- e_in R M B, e_arity B L F, A = F U, e_need (sub B A) "E-Unify" (B :: A :: []).
+type e_let_in (raw -> tm -> tm -> o).
+e_let_value (r_at P R) M A :- !, (e_at P => e_let_in R M A).
+e_let_value R M A :- e_let_in R M A.
+e_let_in R M A :- e_in R M B,
+    (u_recording, e_algebraic B F, e_at P, !, e_let_spare P U, A = F U, e_need (sub B A) "E-Unify" (B :: A :: []); A = B).
+type e_let_spare (nat -> lvl -> o).
+e_let_spare P U :- e_proof_mode, !, e_proof_refresh P 0 U.
+e_let_spare P (lv Cell) :- e_u_found Found, !, e_u_note P Found.
+e_let_spare P U :- print (rep "E-LetRefresh" (cst P [] :: [])), fail.
+type e_arity (tm -> lvl -> (lvl -> tm) -> o).
+% The engine instantiates a clause before trying its first goal. Most
+% expected types are known, so create the refresh variables only on demand.
+e_refresh B A :- flex A, u_recording, !, e_refresh_recorded B A.
+e_refresh B A.
+e_algebraic B V :- e_absent (flex B), e_arity B L V, e_absent (flex L), e_u_pieces L [] Ps, e_u_sup Ps [] Sup, e_absent (Sup = S :: [], (S == lz; S = lv N)).
+e_refresh_recorded B A :- e_algebraic B V, !, e_at P,
+    (e_u_net Es Ks Cs Xs, e_u_assoc (s (s (s (s (s (s P)))))) Ks Cs U, !, A = V U; e_u_found Found, e_u_pool Pool, !, e_u_note P Found, A = V (lv (Pool P)); e_proof_refresh P 5 U, !, A = V U; e_silent_failure; print (rep "E-Refresh" (cst P [] :: [])), fail).
+e_refresh_recorded B A.
+e_arity (typ L) L (X\ typ X).
+e_arity (prod D F) L (X\ prod D (x\ G x X)) :- pi x\ e_arity (F x) L (G x).
+% A written lambda domain remains visible to tactics after conversion.
+e_domain (r_at P D) A H :- !, (e_at P => e_domain D A H).
+e_domain D A A :- e_annotation_hole D H S, !, e_need (conv H A) "E-Unify" (H :: A :: []), e_need (e_done A) "E-Unsolved" (A :: []), infer A S.
+e_domain D A H :- e_kind D H _, e_need (conv H A) "E-Unify" (H :: A :: []).
+e_kind (r_at P R) A S :- !, (e_at P => e_kind R A S).
+% The codomain of a product is a type, which keeps no name (e_marked).
+e_kind (p_named Name X R) A S :- !, e_name_policy Name X (e_kind R A S).
+e_kind R A S :- e_in R A T, whnf T S, e_need (e_absent (flex S)) "E-Unsolved" (A :: []), e_need (is_sort S) "E-Unify" (A :: T :: []).
+e_head R M A Ms :- flex R, !, e_need fail "E-Unsolved" [].
+e_head (r_at P R) M A Ms :- !, (e_at P => e_head R M A Ms).
+e_head (p_resolve Name Fallback) M A Ms :- !,
+    e_proof_resolve Name Fallback R, e_head R M A Ms.
+e_head (r_ref C Ms) C A Ms :- !, application_head C A.
+e_head R M A [] :- e_in R M A.
+e_arrow T A B :- e_need (e_absent (flex T), whnf T W, e_absent (flex W), W = prod A B) "E-NotFunction" (T :: []).
+e_args F T (r_given H :: Ms) Rs M A :- !, e_arrow T D B, e_out (r_ref H []) D H, e_args (app F H) (B H) Ms Rs M A.
+e_args F T (r_implicit Used :: Ms) Rs M A :- !, e_arrow T D B, Used = H :: D :: [], e_hole_policy 0 Request D H, e_args (app F H) (B H) Ms Rs M A.
+e_args F T (r_block Used G :: Ms) Rs M A :- !, e_arrow T D B, Used = H :: D :: [], e_hole_policy 0 Request D H, e_args (app F H) (B H) Ms Rs M A.
+e_args F T Ms [] F A :- !, e_unused Ms, template_defaults F, template_result F T A.
+e_args F T Ms (R :: Rs) M A :- e_apply_arrow F T D B, e_out R D U, e_args_rest Ms Next, e_args (app F U) (B U) Next Rs M A.
+type e_apply_arrow (tm -> tm -> tm -> (tm -> tm) -> o).
+e_apply_arrow F T D B :- flex F, !, e_need fail "E-NotFunction" (T :: []).
+e_apply_arrow (app F X) T D B :- !, e_need (e_absent (flex T), whnf T W, e_absent (flex W), W = prod D B) "E-Arity" (T :: []).
+e_apply_arrow F T D B :- e_arrow T D B.
+type e_args_rest (list rmode -> list rmode -> o).
+e_args_rest [] [] :- !.
+e_args_rest (M :: Ms) Ms.
+% An implicit position after an explicit one that got no argument is not
+% filled: its cell is empty.
+type e_unused (list rmode -> o).
+e_unused [] :- !.
+e_unused (r_implicit [] :: Ms) :- !, e_unused Ms.
+e_unused (r_block [] G :: Ms) :- !, e_unused Ms.
+e_unused (M :: Ms) :- e_unused Ms.
+
+% Groundness is checked before the proposal leaves this run. No enumeration.
+e_done X :- flex X, !, fail.
+e_done (typ L) :- !, e_level L.
+e_done (prod A B) :- !, e_done A, pi x\ e_done (B x).
+e_done (lam A B) :- !, e_done A, pi x\ e_done (B x).
+e_done (letin M A B) :- !, e_done M, e_done A, pi x\ e_done (B x).
+e_done (cast M A) :- !, e_done M, e_done A.
+e_done (proj B J R) :- !, e_done R.
+e_done (app M N) :- !, e_done M, e_done N.
+e_done (abs B) :- !, pi x\ e_done (B x).
+e_done (cas F P T Bs) :- !, e_done F, e_done P, e_done T, e_done_all Bs.
+e_done (fix K Ns Fs Ts) :- !, e_done_all Fs, pi f\ e_done_all (Ts f).
+e_done X.
+e_done_all [] :- !.
+e_done_all (X :: Xs) :- e_done X, e_done_all Xs.
+% A raw term is walked twice at the end of its command. The first walk
+% (rp_default) gives the parameter of the block to each hole of an implicit
+% parameter that unification left; it is made for a
+% constructor type only. The second (rp_finish) requires every hole and
+% every implicit argument to be solved. Both walk the copies that a wildcard
+% branch got, not its template.
+e_raw_done R :- e_raw rp_finish R.
+e_raw Ph R :- flex R, !, e_need fail "E-Unsolved" [].
+e_raw Ph (r_at P R) :- !, (e_at P => e_raw Ph R).
+e_raw Ph (p_intro_lam Name Note B) :- !, pi x\ e_raw Ph (B x).
+e_raw Ph (p_named Name X R) :- !, e_raw Ph R.
+e_raw Ph (p_note Note R) :- !, e_raw Ph R.
+e_raw Ph (p_resolve Name Fallback) :- !, e_raw Ph Fallback.
+e_raw Ph (p_missing Name) :- !.
+e_raw Ph (r_ref T Ms) :- !, e_modes Ph Ms.
+e_raw Ph (r_proj B J R) :- !, e_raw Ph R.
+e_raw rp_finish (r_hole P R H A) :- !, e_finish_hole P R A H.
+e_finish_hole P R A H :- e_proof_mode, !, e_proof_finish P R A H.
+e_finish_hole P R A H :- e_done H, e_done A, !, R = r_ref H [].
+e_finish_hole P R A H :- e_unresolved P R A H.
+% ALPHA1 batches never enter debug or ask an oracle to build a proof.
+e_unresolved P R A H :- e_at P => e_need fail "E-Unsolved" (H :: A :: []).
+e_raw Ph (r_apps H Rs) :- !, e_raw Ph H, e_raw_all Ph Rs.
+e_raw Ph (r_pi A B) :- !, e_raw Ph A, pi x\ e_raw Ph (B x).
+e_raw Ph (r_lam A B) :- !, e_raw Ph A, pi x\ e_raw Ph (B x).
+e_raw Ph (r_untyped B) :- !, pi x\ e_raw Ph (B x).
+e_raw Ph (r_open B) :- !, pi x\ e_raw Ph (B x).
+e_raw Ph (r_let A M B) :- !, e_raw Ph A, e_raw Ph M, pi x\ e_raw Ph (B x).
+e_raw Ph (r_letfresh U M B) :- !, e_raw Ph M, pi x\ e_raw Ph (B x).
+e_raw Ph (r_letinfer M B) :- !, e_raw Ph M, pi x\ e_raw Ph (B x).
+e_raw Ph (r_cut A M B) :- !, e_raw Ph A, e_raw Ph M, pi x\ e_raw Ph (B x).
+e_raw Ph (r_annot M A) :- !, e_raw Ph M, e_raw Ph A.
+e_raw Ph (r_abs B) :- !, pi x\ e_raw Ph (B x).
+e_raw Ph (r_match T Family R Bs) :- !, e_raw Ph T, e_raw_return Ph R, e_raw_branches Ph Bs.
+e_raw Ph (r_fix K Ns Fs Ts Ds) :- !, e_raw_all Ph Fs, pi f\ e_raw_all Ph (Ts f).
+e_raw Ph R.
+type e_raw_return (rphase -> rreturn -> o).
+type e_raw_branches (rphase -> list rbranch -> o).
+type e_raw_copies (rphase -> list raw -> o).
+e_raw_return Ph rr_none :- !.
+e_raw_return Ph (rr_some R) :- !, e_raw Ph R.
+e_raw_return Ph (rr_auto R) :- e_raw Ph R.
+e_raw_branches Ph [] :- !.
+e_raw_branches Ph (rb_named B I J R :: Rs) :- !, e_raw Ph R, e_raw_branches Ph Rs.
+e_raw_branches Ph (rb_other R Is :: Rs) :- e_raw_copies Ph Is, e_raw_branches Ph Rs.
+e_raw_copies Ph Is :- flex Is, !.
+e_raw_copies Ph Is :- e_raw_all Ph Is.
+e_raw_all Ph [] :- !.
+e_raw_all Ph (R :: Rs) :- e_raw Ph R, e_raw_all Ph Rs.
+type e_modes (rphase -> list rmode -> o).
+type e_used_done (list tm -> o).
+type e_default (list tm -> tm -> o).
+e_modes Ph [] :- !.
+e_modes rp_finish (r_implicit Used :: Ms) :- !, e_used_done Used, e_modes rp_finish Ms.
+e_modes rp_finish (r_block Used G :: Ms) :- !, e_used_done Used, e_modes rp_finish Ms.
+e_modes rp_default (r_block Used G :: Ms) :- !, e_default Used G, e_modes rp_default Ms.
+e_modes Ph (M :: Ms) :- e_modes Ph Ms.
+e_used_done Used :- flex Used, !.
+e_used_done Used :- e_need (e_done_all Used) "E-Unsolved" Used.
+e_default Used G :- flex Used, !.
+e_default (H :: Rest) G :- flex H, !, H = G.
+e_default Used G.
+e_types [] [] :- !.
+e_types (R :: Rs) (A :: As) :- e_kind R A _, e_types Rs As.
+e_bodies [] [] [] :- !.
+e_bodies (R :: Rs) (A :: As) (M :: Ms) :- e_out R A M, e_bodies Rs As Ms.
+
+% [E-Fix]. This is the one backtracking search admitted by the elaborator.
+e_choices [] [] [] :- !.
+e_choices (C :: Cs) (F :: Fs) (N :: Ns) :- e_choose C F N, e_choices Cs Fs Ns.
+e_choose (r_fixed N) F N :- !.
+e_choose (r_search Ns) F N :- e_member N Ns, e_struct F N.
+e_struct F N :- whnf F W, e_struct_head W N.
+e_struct_head (prod A B) 0 :- whnf A W, spine W H _, match_head H I J UV.
+e_struct_head (prod A B) (s N) :- pi x\ var_type x A => e_struct (B x) N.
+
+% [E-Match]. The scrutinee type supplies the family and its parameters.
+e_case R Family Ret Branches A M :-
+    e_in R T TT, e_scrutinee_type R T TT, whnf TT W, e_scrutinee_type R T W, spine W H Args, e_need (e_absent (flex H)) "E-Unsolved" (T :: TT :: []),
+    e_need (match_head H B I UV) "E-Unify" (TT :: []),
+    ind_info B I UV N E Marks, split N Args Qs Vs,
+    e_need (e_absent (e_wildcard Branches); e_missing_branch B I 0 Marks Branches) "E-Arity" [],
+    e_need (e_wildcard Branches; e_absent (e_missing_branch B I 0 Marks Branches)) "E-Arity" [],
+    e_need (e_family Family B I Vs) "E-Unify" (TT :: []), apps (ind B I UV) Qs F,
+    ind_type B I UV FT, inst FT Qs AT,
+    e_motive Ret AT F Vs T A P,
+    e_branch_slots Marks Bs,
+    e_branches B I UV N Qs P Branches Branches Marks Bs Is, e_instances Branches Is,
+    ret_type P Vs T Result, e_need (sub Result A) "E-Unify" (Result :: A :: []),
+    e_record_case B F P T Bs M.
+type e_record_case (nat -> tm -> tm -> tm -> list tm -> tm -> o).
+% Keep a single copy of the scrutinee, including when the arm uses no
+% fields. Its typing and guard obligations still reach the ground check.
+e_record_case B F P T [Br] (letin T F Body) :- record_info B K Eta, !,
+    e_kernel_need (record_motive B P) "T-Record-Elim" [F],
+    pi r\ var_type r F => record_branch K 0 B r Br (Body r).
+e_record_case B F P T Bs (cas F P T Bs).
+e_family rf_any B I Vs :- !.
+e_family (rf_named B I) B I Vs :- !.
+e_family (rf_pattern B I N) B I Vs :- e_length N Vs.
+e_length 0 [] :- !.
+e_length (s N) (V :: Vs) :- e_length N Vs.
+e_scrutinee_type (r_at P R) T TT :- !, (e_at P => e_scrutinee_type R T TT).
+e_scrutinee_type R T TT :- e_need (e_absent (flex TT)) "E-Unsolved" (T :: TT :: []).
+e_motive (rr_some R) AT F Vs T A P :- !, e_return AT F R P.
+e_motive (rr_auto R) AT F Vs T A P :- !, e_return_auto AT F R P.
+e_motive rr_none AT F Vs T A P :- e_need (e_absent (flex A)) "E-NeedReturn" [],
+    rev Vs [] Rs, e_abstract AT F (T :: Rs) [] A P.
+e_return_auto AT F R P :- e_need (e_absent (flex AT)) "E-Unsolved" [], whnf AT W, e_need (e_absent (flex W)) "E-Unsolved" [], e_return_auto_head W F R P.
+e_return_auto_head (prod D B) F R (abs P) :- !, pi x\ var_type x D => e_return_auto (B x) (app F x) R (P x).
+e_return_auto_head AT F R P :- e_return AT F R P.
+e_return AT F R P :- e_need (e_absent (flex AT)) "E-Unsolved" [], whnf AT W, e_need (e_absent (flex W)) "E-Unsolved" [], e_return_head W F R P.
+e_return_head (prod D B) F (r_abs R) (abs P) :- !, pi x\ var_type x D => e_return (B x) (app F x) (R x) (P x).
+e_return_head AT F (r_abs R) (abs P) :- pi x\ var_type x F => e_kind (R x) (P x) _.
+% The inferred return clause is a copy of the expected type A. Olds has the
+% scrutinee, then its indices from the last to the first; New has the
+% variables of those indices in that order. A subterm of A that is the same
+% term as one of Olds becomes, as a whole, the variable of the first such
+% one. No other return clause is tried.
+e_abstract AT F Olds New A P :- e_need (e_absent (flex AT)) "E-Unsolved" [], whnf AT W, e_need (e_absent (flex W)) "E-Unsolved" [], e_abstract_head W F Olds New A P.
+e_abstract_head (prod D B) F Olds New A (abs P) :- !, pi x\ var_type x D => e_abstract (B x) (app F x) Olds (x :: New) A (P x).
+e_abstract_head AT F Olds New A (abs P) :- pi x\ e_copy A Olds (x :: New) (P x).
+e_lookup X (Z :: Xs) (Y :: Ys) Y :- e_same X Z, !.
+e_lookup X (Z :: Xs) (Y :: Ys) R :- e_lookup X Xs Ys R.
+e_copy T Xs Ys T :- flex T, !.
+e_copy T Xs Ys R :- e_lookup T Xs Ys R, !.
+e_copy (prod A B) Xs Ys (prod C D) :- !, e_copy A Xs Ys C, pi x\ e_copy (B x) Xs Ys (D x).
+e_copy (lam A B) Xs Ys (lam C D) :- !, e_copy A Xs Ys C, pi x\ e_copy (B x) Xs Ys (D x).
+e_copy (letin M A B) Xs Ys (letin N C D) :- !, e_copy M Xs Ys N, e_copy A Xs Ys C, pi x\ e_copy (B x) Xs Ys (D x).
+e_copy (cast M A) Xs Ys (cast N C) :- !, e_copy M Xs Ys N, e_copy A Xs Ys C.
+e_copy (proj B J R) Xs Ys (proj B J S) :- !, e_copy R Xs Ys S.
+e_copy (app M N) Xs Ys (app P Q) :- !, e_copy M Xs Ys P, e_copy N Xs Ys Q.
+e_copy (abs M) Xs Ys (abs N) :- !, pi x\ e_copy (M x) Xs Ys (N x).
+e_copy (cas F P T Bs) Xs Ys (cas G Q U Cs) :- !, e_copy F Xs Ys G, e_copy P Xs Ys Q, e_copy T Xs Ys U, e_copy_all Bs Xs Ys Cs.
+e_copy (fix K Ns Fs Ts) Xs Ys (fix K Ns Gs Us) :- !, e_copy_all Fs Xs Ys Gs, pi f\ e_copy_all (Ts f) Xs Ys (Us f).
+e_copy T Xs Ys T.
+e_copy_all [] Xs Ys [] :- !.
+e_copy_all (T :: Ts) Xs Ys (R :: Rs) :- e_copy T Xs Ys R, e_copy_all Ts Xs Ys Rs.
+% The same term: nothing is reduced and nothing is bound. A term that has a
+% hole in it is the same as no term.
+e_same X Y :- flex X, !, fail.
+e_same X Y :- flex Y, !, fail.
+e_same (typ L) (typ K) :- !, e_level L, e_level K, L = K.
+e_same (prod A B) (prod C D) :- !, e_same A C, pi x\ e_same (B x) (D x).
+e_same (lam A B) (lam C D) :- !, e_same A C, pi x\ e_same (B x) (D x).
+e_same (letin M A B) (letin N C D) :- !, e_same M N, e_same A C, pi x\ e_same (B x) (D x).
+e_same (cast M A) (cast N C) :- !, e_same M N, e_same A C.
+e_same (proj B J R) (proj B J S) :- !, e_same R S.
+e_same (app M N) (app P Q) :- !, e_same M P, e_same N Q.
+e_same (abs M) (abs N) :- !, pi x\ e_same (M x) (N x).
+e_same (cas F P T Bs) (cas G Q U Cs) :- !, e_same F G, e_same P Q, e_same T U, e_same_all Bs Cs.
+e_same (fix K Ns Fs Ts) (fix K Ns Gs Us) :- !, e_same_all Fs Gs, pi f\ e_same_all (Ts f) (Us f).
+e_same X X.
+e_same_all Xs Ys :- flex Xs, !, fail.
+e_same_all Xs Ys :- flex Ys, !, fail.
+e_same_all [] [] :- !.
+e_same_all (X :: Xs) (Y :: Ys) :- e_same X Y, e_same_all Xs Ys.
+
+% Elaborate written branches from left to right. The answer slots are in
+% constructor order, as Core requires; a later branch must not solve a hole
+% before an earlier branch reaches its `fix` boundary.
+e_branch_slots [] [] :- !.
+e_branch_slots (M :: Ms) (Br :: Bs) :- e_branch_slots Ms Bs.
+e_branches B I UV N Qs P [] Raw Marks Bs [] :- !.
+e_branches B I UV N Qs P (rb_named B I J R :: Rs) Raw Marks Bs Is :- !,
+    e_need (nth J Bs Br) "E-Arity" [],
+    e_branch_one B I J UV N Qs P R Br [] [],
+    e_branches B I UV N Qs P Rs Raw Marks Bs Is.
+e_branches B I UV N Qs P (rb_other R Cell :: []) Raw Marks Bs Is :-
+    e_remaining B I UV 0 N Qs P Marks Raw Bs R Is.
+% A final wildcard covers the remaining constructors in declaration order.
+e_remaining B I UV J N Qs P [] Raw [] R [] :- !.
+e_remaining B I UV J N Qs P (M :: Ms) Raw (Br :: Bs) R Is :-
+    e_named_branch B I J Raw, !,
+    e_remaining B I UV (s J) N Qs P Ms Raw Bs R Is.
+e_remaining B I UV J N Qs P (M :: Ms) Raw (Br :: Bs) R Is :-
+    e_branch_one B I J UV N Qs P (r_wild R) Br Is Js,
+    e_remaining B I UV (s J) N Qs P Ms Raw Bs R Js.
+% A written wildcard must cover at least one constructor. Silently erasing
+% an unused body would also erase its typing and guardedness obligations.
+e_wildcard (rb_other R Is :: Rs) :- !.
+e_wildcard (R :: Rs) :- e_wildcard Rs.
+e_named_branch B I J (rb_named B I J R :: Rs) :- !.
+e_named_branch B I J (R :: Rs) :- e_named_branch B I J Rs.
+e_missing_branch B I J (M :: Ms) Raw :- e_absent (e_named_branch B I J Raw), !.
+e_missing_branch B I J (M :: Ms) Raw :- e_missing_branch B I (s J) Ms Raw.
+e_branch_one B I J UV N Qs P Found Br Is Js :-
+    con_type B I J UV CT, inst CT Qs T, apps (con B I J UV) Qs C,
+    e_branch_raw T Found R Is Js,
+    e_branch N T C P R Br.
+e_branch N T C P R Br :- e_need (e_absent (flex T)) "E-Unsolved" [], whnf T W, e_need (e_absent (flex W)) "E-Unsolved" [], e_branch_head N W C P R Br.
+e_branch_head N (prod Z T) C P (r_abs R) (abs F) :- !, pi z\ var_type z Z => e_branch N (T z) (app C z) P (R z) (F z).
+e_branch_head N (prod Z T) C P R Br :- !, e_need fail "E-Arity" [].
+e_branch_head N T C P (r_abs R) Br :- !, e_need fail "E-Arity" [].
+e_branch_head N T C P R Br :- spine T H As, split N As Qs Us, ret_type P Us C A, e_out R A Br.
+
+% A wildcard branch is read as the branch of each constructor that it covers,
+% with no name for an argument. The constructor gets a copy of the template
+% under one binder for each of its arguments, with implicit arguments and
+% holes of its own; rigid references and source positions are copied
+% unchanged, and no typing happens in this pass. The copy is then a branch
+% like one that is written, and the cell of the wildcard branch gets the
+% copies, so that the end of the command finds them (e_raw).
+e_branch_raw T (r_wild R) S (S :: Is) Is :- !, e_instance T R S.
+e_branch_raw T R R Is Is.
+e_instance T R S :- e_need (e_absent (flex T)) "E-Unsolved" [], whnf T W, e_need (e_absent (flex W)) "E-Unsolved" [], e_instance_head W R S.
+e_instance_head (prod Z T) R (r_abs S) :- !, pi z\ var_type z Z => e_instance (T z) R (S z).
+e_instance_head T R S :- e_fresh R S.
+e_instances [] Is :- !.
+e_instances (rb_other R Cell :: Rs) Is :- !, Cell = Is.
+e_instances (R :: Rs) Is :- e_instances Rs Is.
+type e_fresh (raw -> raw -> o).
+type e_fresh_all (list raw -> list raw -> o).
+type e_fresh_modes (list rmode -> list rmode -> o).
+type e_fresh_return (rreturn -> rreturn -> o).
+type e_fresh_branches (list rbranch -> list rbranch -> o).
+e_fresh (r_at P R) (r_at P S) :- !, e_fresh R S.
+e_fresh (p_intro_lam Name Note B) (p_intro_lam Name Note C) :- !, pi x\ u_local x => e_fresh (B x) (C x).
+e_fresh (p_named Name X R) (p_named Name X S) :- !, e_fresh R S.
+e_fresh (p_note Note R) (p_note Note S) :- !, e_fresh R S.
+e_fresh (p_resolve Name R) (p_resolve Name S) :- !, e_fresh R S.
+e_fresh (p_capture X) (p_capture X) :- !.
+e_fresh (p_missing Name) (p_missing Name) :- !.
+e_fresh (r_ref C Ms) (r_ref D Ns) :- !, e_u_reference C D, e_fresh_modes Ms Ns.
+e_fresh (r_proj B J R) (r_proj B J S) :- !, e_fresh R S.
+e_fresh (r_blank P) (r_hole P R H A) :- !.
+e_fresh (r_apps H Rs) (r_apps G Ss) :- !, e_fresh H G, e_fresh_all Rs Ss.
+e_fresh (r_pi A B) (r_pi C D) :- !, e_fresh A C, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_lam A B) (r_lam C D) :- !, e_fresh A C, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_untyped B) (r_untyped D) :- !, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_open B) (r_open D) :- !, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_let A M B) (r_let C N D) :- !, e_fresh A C, e_fresh M N, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_letfresh U M B) (r_letfresh V N D) :- !, e_u_fresh_level U 0 0 V, e_fresh M N, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_letinfer M B) (r_letinfer N D) :- !, e_fresh M N, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_cut A M B) (r_cut C N D) :- !, e_fresh A C, e_fresh M N, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_annot M A) (r_annot N B) :- !, e_fresh M N, e_fresh A B.
+e_fresh (r_abs B) (r_abs D) :- !, pi x\ u_local x => e_fresh (B x) (D x).
+e_fresh (r_match M F R Bs) (r_match N F S Cs) :- !, e_fresh M N, e_fresh_return R S, e_fresh_branches Bs Cs.
+e_fresh (r_fix K Ns Fs Ts Ds) (r_fix K Ns Gs Us Ds) :- e_fresh_all Fs Gs, pi f\ (pi i\ u_local (f i)) => e_fresh_all (Ts f) (Us f).
+e_fresh_all [] [] :- !.
+e_fresh_all (R :: Rs) (S :: Ss) :- e_fresh R S, e_fresh_all Rs Ss.
+e_fresh_modes [] [] :- !.
+e_fresh_modes (r_pending :: Ms) (r_implicit V :: Ns) :- !, e_fresh_modes Ms Ns.
+e_fresh_modes (r_pending_block G :: Ms) (r_block V G :: Ns) :- !, e_fresh_modes Ms Ns.
+e_fresh_modes (M :: Ms) (M :: Ns) :- e_fresh_modes Ms Ns.
+e_fresh_return rr_none rr_none :- !.
+e_fresh_return (rr_some R) (rr_some S) :- !, e_fresh R S.
+e_fresh_return (rr_auto R) (rr_auto S) :- e_fresh R S.
+e_fresh_branches [] [] :- !.
+e_fresh_branches (rb_named B I J R :: Rs) (rb_named B I J S :: Ss) :- !, e_fresh R S, e_fresh_branches Rs Ss.
+% Nested wildcards remain templates until their own constructor is selected.
+% Each copy of the outer branch has its own cell for the copies of this one.
+e_fresh_branches (rb_other R Is :: Rs) (rb_other R Js :: Ss) :- e_fresh_branches Rs Ss.
+
+% Constructor conclusions determine the uniform parameters of their family.
+% This is a proposal constraint, checked again by ground [I-Uniform].
+% An implicit parameter of a family of the block is a hole (`r_block Used G`,
+% with Used the cell of the hole and G the parameter of the block). What
+% unification leaves of it is that parameter. The default walk of e_raw gives
+% it after the type has been elaborated and before any hole is required to
+% be solved. A `fix` of the type gives it where it ends, to the holes that
+% were made before: `rd_pair Used G` under the binders of each (e_defaults).
+type e_defaults (list rdefault -> o).
+type e_default_at (rdefault -> o).
+e_defaults [] :- !.
+e_defaults (D :: Ds) :- e_default_at D, e_defaults Ds.
+e_default_at (rd_bind F) :- !, pi x\ e_default_at (F x).
+e_default_at (rd_fix F) :- !, pi f\ e_default_at (F f).
+e_default_at (rd_pair Used G) :- e_default Used G.
+type e_constructor_query (raw -> nat -> nat -> nat -> tm -> tm -> o).
+type e_constructor_params (nat -> tm -> nat -> nat -> list tm -> o).
+type e_constructor_tail (tm -> nat -> nat -> list tm -> o).
+type e_constructor_tail_head (tm -> nat -> nat -> list tm -> o).
+e_constructor_query R N B I M A :- e_in R M A, e_constructor_params N M B I [], e_raw rp_default R, e_raw_done R, e_need (e_done M, e_done A) "E-Unsolved" (M :: A :: []).
+e_constructor_params N T B I Ps :- flex T, !, e_need fail "E-Unsolved" (T :: []).
+e_constructor_params 0 T B I Rev :- !, rev Rev [] Ps, e_constructor_tail T B I Ps.
+e_constructor_params (s N) T B I Ps :- whnf T (prod A F), pi x\ var_type x A => e_constructor_params N (F x) B I (x :: Ps).
+e_constructor_tail T B I Ps :- e_need (e_absent (flex T)) "E-Unsolved" [], whnf T W, e_need (e_absent (flex W)) "E-Unsolved" [], e_constructor_tail_head W B I Ps.
+e_constructor_tail_head (prod A F) B I Ps :- !, pi x\ var_type x A => e_constructor_tail (F x) B I Ps.
+e_constructor_tail_head T B I Ps :- spine T H As, match_head H B I UV, e_constructor_uniform Ps As.
+type e_constructor_uniform (list tm -> list tm -> o).
+e_constructor_uniform [] As :- !.
+e_constructor_uniform (P :: Ps) (A :: As) :- conv P A, e_constructor_uniform Ps As.
+
+type e_level (lvl -> o).
+e_level L :- flex L, !, fail.
+e_level lz :- !.
+e_level (lg B I) :- u_global_known (lg B I).
+e_level (ls L) :- e_level L.
+e_level (lu L) :- e_level L.
+e_level (lm L M) :- e_level L, e_level M.
+e_level (lv N) :- u_recording, !.
+e_level (lv N) :- u_parameters UV, e_member (lv N) UV.
+e_level (lp N) :- u_parameters UV, nth N UV L.
+
+% Universe inference is a proposal. Every result is rechecked with the exact
+% returned scheme in a clean kernel session; ordinary e_query is unchanged.
+kind ubinding type.
+kind ustate type.
+type u_binding (nat -> nat -> ubinding).
+type u_state (nat -> list ubinding -> ustate).
+type e_u_cells (list lvl -> o).
+type e_u_slots (list nat -> list lvl -> list lvl -> o).
+type e_u_reference (tm -> tm -> o).
+type e_u_fresh_level (lvl -> A -> A -> lvl -> o).
+type e_u_lookup (nat -> list ubinding -> nat -> o).
+type e_u_initial (list lvl -> nat -> list ubinding -> o).
+type e_u_general (nat -> lvl -> ustate -> ustate -> lvl -> o).
+type e_u_general_constraints (nat -> list uconstraint -> ustate -> ustate -> list uconstraint -> o).
+type e_u_general_constraint (nat -> uconstraint -> ustate -> ustate -> uconstraint -> o).
+type e_u_query (nat -> list nat -> list uconstraint -> nat -> raw -> tm -> tm -> nat -> list uconstraint -> tm -> o).
+type e_u_definition (nat -> list nat -> list uconstraint -> nat -> raw -> raw -> tm -> tm -> nat -> list uconstraint -> o).
+type e_u_bind (nat -> list lvl -> (list lvl -> o) -> o).
+type e_u_finish (nat -> nat -> list uconstraint -> list uconstraint -> list lvl -> list nat -> list lvl -> list tm -> list uconstraint -> list tm -> nat -> list uconstraint -> o).
+type e_u_closed_obligations (nat -> list uconstraint -> list uconstraint -> o).
+
+% The level of each marker of the host, by its kind. Kind 1 is a `Type` that
+% is written without a level in a declaration that names no universe: Rocq
+% makes a universe of it that nothing settles, and here it is the next
+% parameter. Every other marker is a cell: 0 a level that is a hole or an
+% full instance that is left out, 2 the least bound of a template argument
+% or of a single-constructor arity ending in bare `Type`, 3 that of a family with two constructors or more, 4 a conclusion
+% that is a hole (`Type@{_}`) of such a family.
+e_u_slots [] UV [].
+e_u_slots (K :: Ks) (U :: UV) (U :: Cs) :- (K = 1; K > 5), !, e_u_slots Ks UV Cs.
+e_u_slots (K :: Ks) UV (lv Cell :: Cs) :- e_u_slots Ks UV Cs.
+e_u_reference C D :- e_u_cells Cells, !, u_map_term e_u_fresh_level 0 0 C D.
+e_u_reference C C.
+e_u_fresh_level lz S S lz.
+e_u_fresh_level lb S S lb.
+e_u_fresh_level (lg B I) S S (lg B I).
+e_u_fresh_level (ls L) S S (ls M) :- e_u_fresh_level L S S M.
+e_u_fresh_level (lp N) S S L :- u_parameters UV, nth N UV L.
+e_u_fresh_level (lu L) S S (lu M) :- e_u_fresh_level L S S M.
+e_u_fresh_level (lm L M) S S (lm A B) :- e_u_fresh_level L S S A, e_u_fresh_level M S S B.
+e_u_fresh_level (lf N) S S L :- e_u_cells Cells, !, nth N Cells L.
+e_u_fresh_level (lv N) S S (lv N).
+e_u_lookup N (u_binding M I :: Rest) I :- N == M, !.
+e_u_lookup N (B :: Rest) I :- e_u_lookup N Rest I.
+e_u_initial [] N [].
+e_u_initial (lv X :: Xs) N (u_binding X N :: Bs) :- e_u_initial Xs (s N) Bs.
+e_u_general Mode lz S S lz.
+e_u_general Mode lb S S lb.
+e_u_general Mode (lg B I) S S (lg B I).
+e_u_general Mode (ls L) S T (ls M) :- e_u_general Mode L S T M.
+e_u_general Mode (lu L) S T (lu M) :- e_u_general Mode L S T M.
+e_u_general Mode (lm L M) S U (lm A B) :- e_u_general Mode L S T A, e_u_general Mode M T U B.
+e_u_general Mode (lv N) (u_state Count Map) (u_state Count Map) (lp I) :- e_u_lookup N Map I, !.
+% A cell that elaboration left unsettled has the level that e_u_minimize
+% found for it (cells that an equation makes one are one there: a cycle of
+% constraints). One that got none is a new parameter where no universe is
+% named (mode 0).
+e_u_general Mode (lv N) S T L :- flex N, e_u_solved Solved, e_u_solution N Solved V, !, e_u_general Mode V S T L.
+e_u_general 0 (lv N) (u_state Count Map) (u_state (s Count) (u_binding N Count :: Map)) (lp Count).
+% Modes 1 and 2 have no clause here. A declaration that names its universes
+% is closed in its parameters, and a level that elaboration left unresolved
+% is not guessed, neither among the parameters nor together with the
+% constraints that would justify the guess: Rocq gives no value to such a
+% level either, and refuses it as an unbound universe.
+e_u_general_constraint Mode (uc_le L M) S U (uc_le A B) :- e_u_general Mode L S T A, e_u_general Mode M T U B.
+e_u_general_constraint Mode (uc_eq L M) S U (uc_eq A B) :- e_u_general Mode L S T A, e_u_general Mode M T U B.
+e_u_general_constraints Mode [] S S [].
+e_u_general_constraints Mode (C :: Cs) S U (D :: Ds) :- e_u_general_constraint Mode C S T D, e_u_general_constraints Mode Cs T U Ds.
+type e_u_cell_member (nat -> list lvl -> o).
+e_u_cell_member N (lv M :: Cs) :- N == M, !.
+e_u_cell_member N (C :: Cs) :- e_u_cell_member N Cs.
+e_u_bind 0 Reverse G :- rev Reverse [] UV, pi Pool\ e_u_pool Pool => G UV.
+e_u_bind (s N) Reverse G :- pi n\ e_u_bind N (lv n :: Reverse) G.
+% Solved implicit arguments may acquire their values after e_args passed their
+% slots. Recheck the complete proposal while recording is still active, so
+% their actual typing obligations enter the generalized context: those of
+% the body (check) and those of the type of a definition (infer). This does
+% not replace the subsequent independent universal kernel admission.
+% A declaration is read with its levels apart: the kernel then compares a
+% sort with a sort by their levels and unifies none (u_levels_apart).
+% Fixed says where each marker ended: a constant with the levels of the
+% markers for its instance, so that it is generalized and put in order with
+% the terms. The host knows the kinds, and so which of them are the universes
+% that nothing settles. The statement of a theorem is held to them where its
+% proof ends. A cell that is left is a universe where it is written, also in
+% a cast: a cast stays in the term, as Rocq keeps it.
+e_u_query Count Kinds Context Explicit Raw Term Type OutCount OutContext Fixed :-
+    e_u_bind Count [] (UV\ sigma Cells\ sigma R\ sigma M\ sigma A\ sigma Q\ sigma Tree\ sigma Full\ sigma Rest\ sigma Cs\ sigma Given\
+        (e_u_slots Kinds UV Cells, (u_origins Explicit Cells Marks => (Q = u_chunk 0 Tree Full Rest, u_subconstraints UV Context Given,
+        (u_context Given => u_parameters UV => e_u_cells Cells => e_u_net [] Kinds Cells [] => u_recording => u_stream Q => u_levels_apart =>
+            (e_fresh Raw R, e_query R M A, (e_u_stopped true; check M A))),
+        (e_u_stopped (Term = prop, Type = prop, OutCount = 0, OutContext = [], Fixed = prop); e_u_listed, u_flat Q Cs [], e_u_set Given Cs, e_u_finish Explicit Count Context Given UV Kinds Cells (M :: A :: cst 0 Cells :: []) Cs (Term :: Type :: Fixed :: []) OutCount OutContext))))).
+e_u_definition Count Kinds Context Explicit RawType RawBody Type Term OutCount OutContext :-
+    e_u_bind Count [] (UV\ sigma Cells\ sigma R\ sigma S\ sigma M\ sigma A\ sigma Q\ sigma Tree\ sigma Full\ sigma Rest\ sigma Cs\ sigma Given\ sigma Sort\
+        (e_u_slots Kinds UV Cells, (u_origins Explicit Cells Marks => (Q = u_chunk 0 Tree Full Rest, u_subconstraints UV Context Given,
+        (u_context Given => u_parameters UV => e_u_cells Cells => e_u_net [] Kinds Cells [] => u_recording => u_stream Q => u_levels_apart =>
+            (e_fresh RawType R, e_fresh RawBody S, e_definition R S A M, (e_u_stopped true; infer A Sort, check M A))),
+        (e_u_stopped (Type = prop, Term = prop, OutCount = 0, OutContext = []); e_u_listed, u_flat Q Cs [], e_u_set Given Cs, e_u_finish Explicit Count Context Given UV Kinds Cells (A :: M :: []) Cs (Type :: Term :: []) OutCount OutContext))))).
+e_u_finish Mode Count Context Given UV Kinds Cells Terms Recorded Result OutCount OutContext :-
+    e_u_resolve_defaults Recorded Given Cs,
+    e_u_initial UV 0 Map, e_u_minimize Mode Given UV Kinds Cells Cs Solved,
+    (e_u_solved Solved => (u_map_terms (e_u_general Mode) (u_state Count Map) S Terms Raw, e_u_general_constraints Mode Cs S (u_state OutCount Final) Obligations)),
+    e_u_reorder Mode Cells Kinds Final OutCount Raw Obligations Result Ordered,
+    e_u_final_context Mode Count Context OutCount Ordered OutContext.
+% Defer a missing slot until the surrounding type has been read. A slot
+% forced to Set is its eta-specialization. Otherwise the owner contributes
+% its shared default, including when two different occurrences constrain it.
+type e_u_resolve_defaults (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_pending (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_install (list uconstraint -> list uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_at_set (lvl -> list uconstraint -> o).
+e_u_resolve_defaults Recorded Given Cs :- e_u_pending Recorded Deferred Other,
+    (Deferred = [], !, Cs = Other; e_u_edges Other Es Tail, e_u_edges Given Tail [],
+        e_u_install Deferred Es Cs Other).
+e_u_pending [] [] [].
+e_u_pending (uc_default B I U :: Cs) (uc_default B I U :: Ds) Es :- !, e_u_pending Cs Ds Es.
+e_u_pending (C :: Cs) Ds (C :: Es) :- e_u_pending Cs Ds Es.
+e_u_install [] Es Tail Tail.
+e_u_install (uc_default B I U :: Ds) Es (uc_eq U L :: Cs) Tail :-
+    (e_u_at_set U Es, !, L = lz; L = lg B I), e_u_install Ds Es Cs Tail.
+e_u_at_set U Es :- U == lz, !.
+e_u_at_set (lv X) Es :- e_member (uc_le (lv Y) lz) Es, e_u_path Es [] X Y, !.
+% A declaration that names no universe has its parameters in the order in
+% which Rocq makes its universes, which is that of the markers: the
+% parameters of the bare `Type`s and the cells that are left, each where it
+% was written. A cell that became a universe that is no cell (Rocq gives a
+% flexible universe the value of the other one) has the place of that
+% universe, which is where its own marker is (kinds 1 and above 4).
+type e_u_reorder (nat -> list lvl -> list nat -> list ubinding -> nat -> list tm -> list uconstraint -> list tm -> list uconstraint -> o).
+type e_u_order (list lvl -> list nat -> list lvl -> list ubinding -> list nat -> list nat -> o).
+type e_u_marks (list lvl -> o).
+e_u_marks Ms :- u_origins 0 Reg Ms, !.
+e_u_marks Ms.
+type e_u_inverse (list nat -> nat -> list lvl -> o).
+type e_u_permute (list lvl -> lvl -> A -> A -> lvl -> o).
+e_u_reorder 0 Cells Kinds Map Count Terms Cs Result Ds :- !, e_u_marks Marks, e_u_order Cells Kinds Marks Map [] Order, e_length Count Order, e_length Count Perm, e_u_inverse Order 0 Perm,
+    (e_u_identity Count 0 Perm, !, Result = Terms, Ds = Cs;
+    u_map_terms (e_u_permute Perm) 0 0 Terms Result, u_subconstraints Perm Cs Ds).
+e_u_reorder Mode Cells Kinds Map Count Terms Cs Terms Cs.
+e_u_order [] Ks Marks Map Acc Order :- rev Acc [] Order.
+e_u_order (lv X :: Cs) (K :: Ks) (Mark :: Ms) Map Acc Order :- flex Mark, (flex X; K = 1; K > 4), e_u_lookup X Map I, e_absent (e_member I Acc), !, e_u_order Cs Ks Ms Map (I :: Acc) Order.
+e_u_order (C :: Cs) (K :: Ks) (Mark :: Ms) Map Acc Order :- e_u_order Cs Ks Ms Map Acc Order.
+e_u_inverse [] P Perm.
+e_u_inverse (I :: Order) P Perm :- nth I Perm (lp P), e_u_inverse Order (s P) Perm.
+e_u_permute Perm L S S M :- (L == lb, M = lb; u_sublevel Perm L M), !.
+type e_u_final_context (nat -> nat -> list uconstraint -> nat -> list uconstraint -> list uconstraint -> o).
+type e_u_consistent (nat -> list uconstraint -> o).
+e_u_final_context 1 Count Context Count Obligations Context :- e_u_closed_obligations Count Context Obligations.
+% Mode 2 is a declaration that names its universes and writes no constraint
+% clause, and mode 0 one that names none. Rocq reads the first as one whose
+% constraints are still to be found (`@{u v}` is `@{u v | +}` there), and
+% the second also finds its universes: each has the constraints that it
+% needs. They must leave it a model, and one choice of the side of a
+% maximum may contradict where the other does not.
+e_u_final_context Mode Count Context OutCount Obligations OutContext :- e_absent (Mode = 1),
+    e_u_normalize_constraints OutCount Obligations Reduced,
+    e_u_append Context Reduced All, e_u_sort All Sorted,
+    e_u_consistent OutCount Sorted, e_u_needed OutCount [] Sorted OutContext.
+% A constraint that the others imply says nothing, and Rocq does not show it:
+% `u <= v` beside `u < v`. Each one is tried against the ones that are kept
+% and the ones that are still to come, in the canonical order. One that is
+% not implied and has an expression on its right is refused.
+type e_u_needed (nat -> list uconstraint -> list uconstraint -> list uconstraint -> o).
+e_u_needed Count Kept [] Result :- rev Kept [] Result.
+e_u_needed Count Kept (C :: Cs) Result :-
+    rev Kept Cs Others, e_u_closed_obligations Count Others (C :: []), !,
+    e_u_needed Count Kept Cs Result.
+e_u_needed Count Kept (uc_le L R :: Cs) Result :- e_absent (e_u_atomic R), !, (e_at 0 => e_need fail "E-Algebraic" []).
+e_u_needed Count Kept (C :: Cs) Result :- e_u_needed Count (C :: Kept) Cs Result.
+% Constraints that no levels satisfy prove every inequality, also that the
+% first parameter is above itself. Without a parameter they are closed, and
+% each of them holds or does not.
+% Read the obligations under fresh parameters. Inside a recording comparison
+% ordinary kernel checks would just append the same obligations again.
+type e_u_holds (uconstraint -> o).
+type e_u_hold_all (list uconstraint -> o).
+e_u_holds (uc_le L M) :- u_value L (A\ u_value M (B\ u_nat_le A B)).
+e_u_holds (uc_eq L M) :- u_value L (A\ u_value M (B\ u_nat_eq A B)).
+e_u_hold_all [].
+e_u_hold_all (C :: Cs) :- e_u_holds C, e_u_hold_all Cs.
+u_choice_possible :- u_stream (u_chunk 0 T F Rest), flex T, !.
+u_choice_possible :- u_stream Q, u_context Given, u_flat Q Cs [],
+    e_u_choice_set Cs Given All, e_u_general_constraints 0 All (u_state 0 []) (u_state Count Map) Assumed,
+    e_u_consistent Count Assumed.
+% Re-reading a term records its obligations again. Keep the ordered trace for
+% elaboration and Show Universes; satisfiability needs each relation only once.
+type e_u_choice_set (list uconstraint -> list uconstraint -> list uconstraint -> o).
+e_u_choice_set [] Acc Acc.
+e_u_choice_set (uc_default B I U :: Cs) Acc All :- !, e_u_choice_set Cs Acc All.
+e_u_choice_set (C :: Cs) Acc All :- e_member D Acc, C == D, !, e_u_choice_set Cs Acc All.
+e_u_choice_set (C :: Cs) Acc All :- e_u_choice_set Cs (C :: Acc) All.
+e_u_consistent Count Context :- e_absent (u_global_constraints Context), !, e_u_local_model Count Context.
+type e_u_local_model (nat -> list uconstraint -> o).
+e_u_local_model 0 Context :- !, e_u_hold_all Context.
+e_u_local_model Count Context :- e_absent (u_universal_bind Count [] Context (UV\ u_nat_le 1 0)).
+e_u_consistent Count Context :- e_absent (u_global_fresh (u_universal_bind Count [] Context (UV\ u_nat_le 1 0))).
+e_u_closed_obligations Count Context Obligations :- u_universal Count Context
+    (UV\ sigma Actual\ u_subconstraints UV Obligations Actual, u_check_constraints Actual).
+
+% Inferred contexts use Rocq's atomic universe constraints. An obligation
+% that every level satisfies says nothing. One whose right side is an
+% expression (a maximum, a successor) gives no constraint: the others must
+% imply it (e_u_needed), as Rocq cannot handle algebraic on the right.
+type e_u_append (list A -> list A -> list A -> o).
+type e_u_normalize_constraints (nat -> list uconstraint -> list uconstraint -> o).
+type e_u_normalize_one (nat -> uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_atomic (lvl -> o).
+e_u_append [] Ys Ys.
+e_u_append (X :: Xs) Ys (X :: Zs) :- e_u_append Xs Ys Zs.
+e_u_atomic L :- u_closed L, !.
+e_u_atomic (lp N).
+e_u_atomic (lg B I).
+e_u_normalize_constraints Count [] [].
+e_u_normalize_constraints Count (C :: Cs) Result :- e_u_normalize_one Count C Result Tail, e_u_normalize_constraints Count Cs Tail.
+e_u_normalize_one Count C Tail Tail :- e_u_closed_obligations Count [] (C :: []), !.
+e_u_normalize_one Count (uc_eq L M) Cs Tail :- !,
+    e_u_normalize_one Count (uc_le L M) Cs More, e_u_normalize_one Count (uc_le M L) More Tail.
+e_u_normalize_one Count (uc_le (lm L M) R) Cs Tail :- !,
+    e_u_normalize_one Count (uc_le L R) Cs More, e_u_normalize_one Count (uc_le M R) More Tail.
+e_u_normalize_one Count (uc_le L (lm M N)) (uc_le L (lm M N) :: Tail) Tail :- !.
+e_u_normalize_one Count (uc_le (lu L) (lu M)) Cs Tail :- !, e_u_normalize_one Count (uc_le L M) Cs Tail.
+e_u_normalize_one Count (uc_le (lu L) M) Cs Tail :- u_closed L, !, e_u_normalize_one Count (uc_le (ls L) M) Cs Tail.
+e_u_normalize_one Count (uc_le L (lu M)) (uc_le L (lu M) :: Tail) Tail :- !.
+e_u_normalize_one Count (uc_le L M) (uc_le L M :: Tail) Tail :- e_u_atomic L, e_u_atomic M, !.
+e_u_normalize_one Count (uc_le (lu L) M) (uc_le (lu L) M :: Tail) Tail :- e_u_base L A, e_u_atomic A, e_u_atomic M.
+
+% Canonical inferred contexts. This orders closed syntax, not universe values.
+% Merge sort removes duplicate obligations in O(n log n) comparisons; repeated
+% premises otherwise multiply the work of independent universal admission.
+% The explicit-context branch above never changes the user's assumptions.
+kind uorder type.
+type u_less uorder.
+type u_same uorder.
+type u_more uorder.
+type e_u_sort (list uconstraint -> list uconstraint -> o).
+type e_u_split (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_merge (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_merge_at (uorder -> uconstraint -> list uconstraint -> uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_constraint_order (uconstraint -> uconstraint -> uorder -> o).
+type e_u_constraint_fields (uconstraint -> nat -> lvl -> lvl -> o).
+type e_u_constraint_at (uorder -> lvl -> lvl -> lvl -> lvl -> uorder -> o).
+type e_u_pair_order (lvl -> lvl -> lvl -> lvl -> uorder -> o).
+type e_u_pair_at (uorder -> lvl -> lvl -> uorder -> o).
+type e_u_level_order (lvl -> lvl -> uorder -> o).
+type e_u_level_tag (lvl -> nat -> o).
+type e_u_level_at (uorder -> lvl -> lvl -> uorder -> o).
+type e_u_nat_order (nat -> nat -> uorder -> o).
+e_u_sort [] [] :- !.
+e_u_sort (C :: []) (C :: []) :- !.
+e_u_sort Cs Result :- e_u_split Cs A B, e_u_sort A X, e_u_sort B Y, e_u_merge X Y Result.
+e_u_split [] [] [] :- !.
+e_u_split (C :: []) (C :: []) [] :- !.
+e_u_split (C :: D :: Cs) (C :: A) (D :: B) :- e_u_split Cs A B.
+e_u_merge [] Cs Cs :- !.
+e_u_merge Cs [] Cs :- !.
+e_u_merge (C :: Cs) (D :: Ds) Result :- e_u_constraint_order C D Order, e_u_merge_at Order C Cs D Ds Result.
+e_u_merge_at u_less C Cs D Ds (C :: Rest) :- e_u_merge Cs (D :: Ds) Rest.
+e_u_merge_at u_same C Cs D Ds (C :: Rest) :- e_u_merge Cs Ds Rest.
+e_u_merge_at u_more C Cs D Ds (D :: Rest) :- e_u_merge (C :: Cs) Ds Rest.
+e_u_constraint_fields (uc_le A B) 0 A B.
+e_u_constraint_fields (uc_eq A B) 1 A B.
+e_u_constraint_order C D Order :-
+    e_u_constraint_fields C N A B, e_u_constraint_fields D M X Y,
+    e_u_nat_order N M Tag, e_u_constraint_at Tag A B X Y Order.
+e_u_constraint_at u_less A B X Y u_less.
+e_u_constraint_at u_more A B X Y u_more.
+e_u_constraint_at u_same A B X Y Order :- e_u_pair_order A B X Y Order.
+e_u_pair_order A B X Y Order :- e_u_level_order A X First, e_u_pair_at First B Y Order.
+e_u_pair_at u_less B Y u_less.
+e_u_pair_at u_more B Y u_more.
+e_u_pair_at u_same B Y Order :- e_u_level_order B Y Order.
+e_u_level_order L M u_same :- L == M, !.
+e_u_level_order L M Order :- e_u_level_tag L A, e_u_level_tag M B,
+    e_u_nat_order A B Tag, e_u_level_at Tag L M Order.
+e_u_level_tag lz 0.
+e_u_level_tag (ls L) 1.
+e_u_level_tag (lp N) 2.
+e_u_level_tag (lu L) 3.
+e_u_level_tag (lm L M) 4.
+e_u_level_tag (lg B I) 5.
+e_u_level_at u_less L M u_less.
+e_u_level_at u_more L M u_more.
+e_u_level_at u_same (ls L) (ls M) Order :- e_u_level_order L M Order.
+e_u_level_at u_same (lg B I) (lg C J) Order :- e_u_nat_order B C First, e_u_pair_at First (lp I) (lp J) Order.
+e_u_level_at u_same (lp N) (lp M) Order :- e_u_nat_order N M Order.
+e_u_level_at u_same (lu L) (lu M) Order :- e_u_level_order L M Order.
+e_u_level_at u_same (lm A B) (lm X Y) Order :- e_u_pair_order A B X Y Order.
+e_u_nat_order N M u_same :- N == M, !.
+e_u_nat_order N M u_less :- N < M, !.
+e_u_nat_order N M u_more :- N > M.
+
+% A block is elaborated in one universe transaction. The private [lb] self
+% instance is replaced only after every family and constructor is generalized.
+kind urawfamily type.
+kind uworkfamily type.
+type u_raw_family (raw -> list raw -> urawfamily).
+type u_work_family (tm -> list raw -> uworkfamily).
+type e_u_inductive (nat -> list nat -> list uconstraint -> nat -> nat -> nat -> list urawfamily -> block -> nat -> list uconstraint -> o).
+type e_u_arities (list urawfamily -> list tm -> list uworkfamily -> o).
+type e_u_families (nat -> nat -> nat -> list uworkfamily -> list family -> o).
+type e_u_constructors (nat -> nat -> nat -> list raw -> list tm -> o).
+type e_u_family_terms (list family -> list family -> list tm -> list tm -> o).
+type e_u_identity (nat -> nat -> list lvl -> o).
+type e_u_close_families (nat -> list lvl -> list family -> list family -> o).
+type e_u_close_term (nat -> list lvl -> tm -> tm -> o).
+type e_u_close_terms (nat -> list lvl -> list tm -> list tm -> o).
+e_u_inductive Count Kinds Context Mode B Parameters RawFamilies (block B Parameters Final) OutCount OutContext :-
+    e_u_bind Count [] (UV\ sigma Cells\ sigma Q\ sigma Tree\ sigma Full\ sigma Rest\ sigma Work\ sigma Arities\ sigma Families\ sigma Info\ sigma Cs\ sigma Reified\ sigma Terms\ sigma Result\ sigma Identity\ sigma Given\
+        (e_u_slots Kinds UV Cells, (u_origins Mode Cells Marks => (Q = u_chunk 0 Tree Full Rest, u_subconstraints UV Context Given,
+        (u_context Given => u_parameters UV => e_u_cells Cells => e_u_net [] Kinds Cells [] => u_recording => u_stream Q => u_levels_apart =>
+            (e_u_arities RawFamilies Arities Work,
+            ((pi i\ pi a\ (ind_type B i (lb :: []) a :- nth i Arities a)) =>
+                e_u_families B Parameters 0 Work Families),
+            (e_u_stopped true; pretyping => u_block_instance B (lb :: []) => admit_ind (block B Parameters Families) Info))),
+        (e_u_stopped (Final = [], OutCount = 0, OutContext = []); e_u_listed, u_flat Q Cs [], e_u_set Given Cs, e_u_family_terms Families Reified Terms Result,
+        e_u_finish Mode Count Context Given UV Kinds Cells Terms Cs Result OutCount OutContext,
+        e_u_identity OutCount 0 Identity, e_u_close_families B Identity Reified Final))))).
+
+% The cells that elaboration left unsettled, and the level of each, as Rocq
+% minimizes its universes (engine/univMinim.ml). Es are the recorded and the
+% written constraints, each `uc_le L R` with R an atom (a cell, a parameter
+% or a closed level) and L an atom or `lu` of one, which is strictly below.
+% Two cells are made one by an equation of levels, `lv C = lv X`: an equation
+% of their numbers would ask Hol's evaluator of naturals to define a cell.
+% An equation of two parameters puts neither below the other here, as Rocq
+% keeps such an equation apart from what is below a universe: it stays among
+% the edges as an equation, which makes the two one level where levels are
+% compared (e_u_path, e_u_dominates), as they are one node of Rocq's graph.
+% A cell is settled after the cells below it (e_u_settle), in this order:
+% - A cell that is below Type@{0} is Type@{0}, and one that is below what
+%   is below it is that level (a cycle of constraints is an equation). A
+%   parameter that is recorded below Type@{0} is refused, as Rocq refuses
+%   it (Cannot enforce u <= Set), unless the written constraints put it
+%   there (e_u_set). The check of the complete term that follows the
+%   reading compares what Rocq compares where it solves an implicit
+%   argument. A cast stays in the term as the `let` that it is (e_in of
+%   r_annot), so that check compares at a cast what the reading compared
+%   there, and nothing is excused. The kernel's admission of a block
+%   compares what Rocq compares (the sort of an argument of a constructor
+%   with the sort of the family).
+% - Its bounds are the values of what is recorded below it (e_u_values),
+%   less those that are in the lower map of another of them (e_u_drop): the
+%   lower map of a parameter is what is recorded below it (a closed level
+%   also when a greater one is), and that of a cell also has the lower
+%   maps of those, less the value of a cell that got one. Levels that the
+%   constraints make equal (a cycle) are one level: neither is in the lower
+%   map of the other, and one of them is kept. Their maximum is normalized
+%   by e_u_sup, where Type@{0} beside another level stays: Rocq keeps
+%   `max(Set,u)` and `max(Set,u+1)`.
+% - No bound, or a bound strictly above an expression: the cell is left.
+% - The conclusion of an arity that is a bare `Type` (kinds 2 and 3) takes
+%   the maximum whatever it is, written in the order of the levels
+%   (e_u_arrange). With two constructors or more (kinds 3 and 4) the
+%   conclusion is at least Type@{0}.
+% - A level that is a hole or an instance that is left out takes the
+%   maximum when that is one level (a parameter, a cell that is left or
+%   Type@{0}: a closed level above it is `Set+n` for Rocq); otherwise the first parameter or left
+%   cell that has the same maximum for its own bounds (e_u_canonical);
+%   otherwise it is left, and stands for that maximum from then on.
+% Solved has `uc_eq (lv Cell) Level` for a cell that got a level, and
+% `uc_le Maximum (lv Cell)` for one that is left (itself for Maximum when it
+% stands for none). A declaration that names its universes has no place for
+% a cell that is left: Rocq refuses such a universe as unbound (e_u_kept).
+% What a cell is compared with from above stays an obligation.
+type e_u_solved (list uconstraint -> o).
+type e_u_solution (nat -> list uconstraint -> lvl -> o).
+type e_u_net (list uconstraint -> list nat -> list lvl -> list lvl -> o).
+type e_u_minimize (nat -> list uconstraint -> list lvl -> list nat -> list lvl -> list uconstraint -> list uconstraint -> o).
+type e_u_edges (list uconstraint -> list uconstraint -> list uconstraint -> o).
+type e_u_flatten (lvl -> lvl -> list uconstraint -> list uconstraint -> o).
+type e_u_atom (lvl -> o).
+type e_u_lows (list uconstraint -> lvl -> list lvl -> o).
+type e_u_base (lvl -> lvl -> o).
+type e_u_cell_of (lvl -> nat -> o).
+type e_u_path (list uconstraint -> list lvl -> nat -> nat -> o).
+type e_u_settle_all (nat -> list lvl -> list nat -> list uconstraint -> list uconstraint -> o).
+type e_u_settle (list lvl -> lvl -> list uconstraint -> list uconstraint -> lvl -> o).
+type e_u_assoc (A -> list A -> list B -> B -> o).
+type e_u_values (list lvl -> list lvl -> list uconstraint -> list uconstraint -> list lvl -> list lvl -> o).
+type e_u_lift (lvl -> lvl -> lvl -> o).
+type e_u_pieces (lvl -> list lvl -> list lvl -> o).
+type e_u_drop (list uconstraint -> list uconstraint -> nat -> list lvl -> list lvl -> list lvl -> o).
+type e_u_under (list uconstraint -> list uconstraint -> list lvl -> lvl -> lvl -> o).
+type e_u_lower (list uconstraint -> list uconstraint -> list lvl -> lvl -> lvl -> o).
+type e_u_sup (list lvl -> list lvl -> list lvl -> o).
+type e_u_dominates (lvl -> lvl -> o).
+type e_u_decide (nat -> nat -> list lvl -> list uconstraint -> list uconstraint -> lvl -> o).
+type e_u_arrange (list lvl -> list lvl -> list lvl -> o).
+type e_u_canonical (list uconstraint -> list uconstraint -> lvl -> list lvl -> lvl -> o).
+type e_u_within (lvl -> lvl -> o).
+type e_u_maximum (list lvl -> lvl -> o).
+e_u_solution N (uc_eq (lv M) L :: Rest) L :- N == M, !.
+e_u_solution N (S :: Rest) L :- e_u_solution N Rest L.
+e_u_minimize Mode Given UV Kinds Cells Cs Solved :-
+    e_u_edges Cs Es Gs, e_u_edges Given Gs [], (Mode = 0, Candidates = Cells; e_u_append UV Cells Candidates), !,
+    (e_u_net Es Kinds Cells Candidates => e_u_settle_all Mode Cells Kinds [] Solved).
+type e_u_set (list uconstraint -> list uconstraint -> o).
+e_u_set Given Cs :- e_u_edges Cs Es Gs, e_u_edges Given Gs [], (e_at 0 => e_need (e_absent (e_member (uc_le (lv X) lz) Es, e_absent (flex X), e_absent (u_global_judge (u_assume Gs (u_inequality (lv X) lz))))) "E-Set" []).
+e_u_edges [] Es Es.
+e_u_edges (C :: Cs) Es Tail :- e_member D Cs, D == C, !, e_u_edges Cs Es Tail.
+e_u_edges (uc_eq (lv X) (lv Y) :: Cs) (uc_eq (lv X) (lv Y) :: Es) Tail :- e_absent (flex X), e_absent (flex Y), !, e_u_edges Cs Es Tail.
+e_u_edges (uc_eq L R :: Cs) Es Tail :- !, e_u_edges (uc_le L R :: uc_le R L :: Cs) Es Tail.
+e_u_edges (uc_le L R :: Cs) Es Tail :- e_absent (flex R), e_u_atom R, !, e_u_flatten R L Es More, e_u_edges Cs More Tail.
+e_u_edges (C :: Cs) Es Tail :- e_u_edges Cs Es Tail.
+e_u_flatten R L Es Es :- flex L, !.
+e_u_flatten R (lm L M) Es Tail :- !, e_u_flatten R L Es More, e_u_flatten R M More Tail.
+e_u_flatten R L (uc_le L R :: Tail) Tail.
+e_u_atom (lv N) :- !.
+e_u_atom (lg B I) :- !.
+e_u_atom L :- u_closed L.
+e_u_lows [] Y [].
+e_u_lows (uc_le L R :: Es) Y (L :: Ls) :- R == Y, !, e_u_lows Es Y Ls.
+e_u_lows (E :: Es) Y Ls :- e_u_lows Es Y Ls.
+e_u_base (lu L) A :- !, e_u_base L A.
+e_u_base L L.
+e_u_cell_of (lv N) N :- flex N.
+% from the level X up to the level Y by constraints that are not strict
+e_u_path Es Seen X Y :- X == Y, !.
+e_u_path Es Seen X Y :- (e_member (uc_le (lv A) (lv Z)) Es; e_member (uc_eq (lv A) (lv Z)) Es; e_member (uc_eq (lv Z) (lv A)) Es), A == X, e_absent (e_u_cell_member Z Seen), e_u_path Es (lv Z :: Seen) Z Y, !.
+e_u_settle_all Mode [] Ks S S.
+e_u_settle_all Mode (L :: Ls) (K :: Ks) S U :- e_u_settle [] L S T V,
+    (Mode = 0; e_absent (e_u_cell_of V N); (e_at 0 => e_need (K < 2) "E-Conclusion" []), (e_at 0 => e_need fail "E-Level" [])), !, e_u_settle_all Mode Ls Ks T U.
+e_u_settle Path (lv C) S S V :- flex C, e_u_solution C S V, !.
+e_u_settle Path (lv C) S (uc_eq (lv C) G :: S) G :- flex C, e_u_net Es Ks Cells Candidates,
+    e_member (uc_le (lv A) (lg B I)) Es, A == C,
+    G = lg B I, e_member (uc_le G (lv D)) Es, D == C, !.
+e_u_settle Path (lv C) S S (lv C) :- flex C, (e_u_cell_member C Path; e_member (uc_le B (lv D)) S, D == C), !.
+e_u_settle Path (lv C) S (uc_eq (lv C) lz :: S) lz :- flex C, e_u_net Es Kinds Cells Candidates, e_u_cell_member C Cells, e_member (uc_le (lv Z) lz) Es, e_u_path Es [] C Z, !.
+e_u_settle Path (lv C) S U V :- flex C, e_u_net Es Kinds Cells Candidates, e_u_cell_member C Cells,
+    e_member (uc_le (lv A) (lv X)) Es, A == C, e_absent (X == C), e_u_path Es [] X C, !, lv C = lv X, e_u_settle Path (lv X) S U V.
+e_u_settle Path (lv C) S U V :- flex C, e_u_net Es Kinds Cells Candidates, e_u_assoc (lv C) Cells Kinds K, !,
+    e_u_lows Es (lv C) Direct, e_u_values (lv C :: Path) Direct S T [] Values, e_u_drop Es T C Values [] Bounds,
+    (K > 2, Kept = lz :: Bounds; Kept = Bounds), !, e_u_sup Kept [] Sup, e_u_decide K C Sup T U V.
+e_u_settle Path L S S L.
+e_u_assoc X (Y :: Ys) (Z :: Zs) Z :- X == Y, !.
+e_u_assoc X (Y :: Ys) (Z :: Zs) W :- e_u_assoc X Ys Zs W.
+e_u_values Path [] S S Acc Acc.
+e_u_values (P :: Path) (L :: Ls) S U Acc Out :- L == P, !, e_u_values (P :: Path) Ls S U Acc Out.
+e_u_values Path (L :: Ls) S U Acc Out :- e_u_base L A, e_u_settle Path A S T V, e_u_lift L V W, e_u_pieces W Acc More, e_u_values Path Ls T U More Out.
+e_u_lift (lu L) V W :- !, e_u_lift L V X, u_successor X W.
+e_u_lift L V V.
+e_u_pieces (lm L M) Acc Out :- !, e_u_pieces L Acc More, e_u_pieces M More Out.
+e_u_pieces L Acc (L :: Acc).
+e_u_drop Es S C [] Acc Acc.
+e_u_drop Es S C (X :: Xs) Acc Out :- e_u_lows Es (lv C) Ls, e_member L Ls, e_u_under Es S (lv C :: []) L X, !, e_u_drop Es S C Xs Acc Out.
+e_u_drop Es S C (X :: Xs) Acc Out :- e_u_drop Es S C Xs (X :: Acc) Out.
+e_u_under Es S Seen L X :- e_u_base L (lv A), e_absent (e_u_cell_member A Seen), e_absent (e_u_base X (lv N), e_u_path Es [] A N),
+    e_absent (flex A, e_u_solution A S V, e_u_base X B, e_u_pieces V [] Ps, e_member P Ps, e_u_base P C, C == B), e_u_lower Es S (lv A :: Seen) (lv A) X.
+e_u_lower Es S Seen Z X :- e_u_lows Es Z Ls, e_member L Ls, (e_u_dominates L X; e_u_cell_of Z N, e_u_under Es S Seen L X), !.
+e_u_sup [] Seen [].
+e_u_sup (L :: Ls) Seen Out :- (e_member M Ls; e_member M Seen), e_u_dominates M L, !, e_u_sup Ls Seen Out.
+e_u_sup (L :: Ls) Seen (L :: Out) :- e_u_sup Ls (L :: Seen) Out.
+e_u_dominates M L :- M == L, !.
+e_u_dominates M L :- u_closed M, u_closed L, !, u_closed_le L M.
+e_u_dominates (lu M) L :- (L = lu K, e_u_dominates M K; e_u_dominates M L), !.
+e_u_dominates (lv M) (lv L) :- e_u_net Es Kinds Cells Candidates, e_u_path Es [] M L, e_u_path Es [] L M.
+e_u_decide K C Sup S (uc_le (lv C) (lv C) :: S) (lv C) :- (Sup = []; e_member (lu L) Sup, e_absent (e_u_atom L)), !.
+e_u_decide K C Sup S (uc_eq (lv C) V :: S) V :- K > 1, K < 4, !, e_u_net Es Kinds Cells Candidates, (e_member Z Sup, u_closed Z; Z = lz), !,
+    e_u_arrange (Z :: Candidates) Sup Arranged, e_u_sup Arranged [] Sorted, e_u_maximum Sorted V.
+e_u_arrange [] Sup [].
+e_u_arrange (X :: Xs) Sup Out :- (e_member L Sup, e_u_base L B, B == X, !, Out = L :: More; Out = More), e_u_arrange Xs Sup More.
+e_u_decide K C (V :: []) S (uc_eq (lv C) V :: S) V :- (V == lz; V = lv N), !.
+e_u_decide K C Sup S (uc_eq (lv C) V :: S) V :- e_u_maximum Sup M, e_u_net Es Kinds Cells Candidates, e_u_canonical Es S M Candidates V, !.
+e_u_decide K C Sup S (uc_le M (lv C) :: S) (lv C) :- e_u_maximum Sup M.
+e_u_canonical Es S M (lv X :: Xs) (lv X) :- (flex X, e_member (uc_le N (lv Y)) S, Y == X; e_absent (flex X), e_u_lows Es (lv X) (L :: Ls), e_u_sup (L :: Ls) [] Sup, e_u_maximum Sup N),
+    e_u_within M N, e_u_within N M, !.
+e_u_canonical Es S M (X :: Xs) V :- e_u_canonical Es S M Xs V.
+e_u_within (lm A B) N :- !, e_u_within A N, e_u_within B N.
+e_u_within A (lm B C) :- !, (e_u_within A B; e_u_within A C), !.
+e_u_within A B :- e_u_dominates A B, e_u_dominates B A.
+e_u_maximum (L :: []) L :- !.
+e_u_maximum (L :: Ls) (lm L M) :- e_u_maximum Ls M.
+e_u_arities [] [] [].
+e_u_arities (u_raw_family Raw Constructors :: Rs) (A :: As) (u_work_family A Constructors :: Fs) :-
+    e_fresh Raw R, e_query R A Sort, e_need (is_sort Sort) "I-Arity" (A :: []), e_u_arities Rs As Fs.
+e_u_families B N I [] [].
+e_u_families B N I (u_work_family A Raw :: Fs) (family A Ts :: Gs) :-
+    e_u_constructors B N I Raw Ts, e_u_families B N (s I) Fs Gs.
+e_u_constructors B N I [] [].
+e_u_constructors B N I (Raw :: Rs) (T :: Ts) :-
+    e_fresh Raw R, e_constructor_query R N B I T Sort, e_u_constructors B N I Rs Ts.
+e_u_family_terms [] [] [] [].
+e_u_family_terms (family A [] :: Fs) (family B [] :: Gs) (A :: As) (B :: Bs) :- !, e_u_family_terms Fs Gs As Bs.
+e_u_family_terms (family A (T :: Ts) :: Fs) (family B (U :: Us) :: Gs) (T :: As) (U :: Bs) :- e_u_family_terms (family A Ts :: Fs) (family B Us :: Gs) As Bs.
+e_u_identity 0 I [].
+e_u_identity (s N) I (lp I :: Is) :- e_u_identity N (s I) Is.
+e_u_close_families B UV [] [].
+e_u_close_families B UV (family A Ts :: Fs) (family C Us :: Gs) :-
+    e_u_close_term B UV A C, e_u_close_terms B UV Ts Us, e_u_close_families B UV Fs Gs.
+e_u_close_terms B UV [] [].
+e_u_close_terms B UV (T :: Ts) (U :: Us) :- e_u_close_term B UV T U, e_u_close_terms B UV Ts Us.
+e_u_close_term B UV (ind B I (lb :: [])) (ind B I UV) :- !.
+e_u_close_term B UV (con B I J (lb :: [])) (con B I J UV) :- !.
+e_u_close_term B UV (prod A F) (prod C G) :- !, e_u_close_term B UV A C, pi x\ e_u_close_term B UV (F x) (G x).
+e_u_close_term B UV (lam A F) (lam C G) :- !, e_u_close_term B UV A C, pi x\ e_u_close_term B UV (F x) (G x).
+e_u_close_term B UV (letin T A F) (letin S C G) :- !, e_u_close_term B UV T S, e_u_close_term B UV A C, pi x\ e_u_close_term B UV (F x) (G x).
+e_u_close_term B UV (cast M A) (cast N C) :- !, e_u_close_term B UV M N, e_u_close_term B UV A C.
+e_u_close_term B UV (proj I J R) (proj I J S) :- !, e_u_close_term B UV R S.
+e_u_close_term B UV (app F A) (app G C) :- !, e_u_close_term B UV F G, e_u_close_term B UV A C.
+e_u_close_term B UV (abs F) (abs G) :- !, pi x\ e_u_close_term B UV (F x) (G x).
+e_u_close_term B UV (cas F P T Bs) (cas G Q S Cs) :- !,
+    e_u_close_term B UV F G, e_u_close_term B UV P Q, e_u_close_term B UV T S, e_u_close_terms B UV Bs Cs.
+e_u_close_term B UV (fix K Ns Fs Ts) (fix K Ns Gs Us) :- !,
+    e_u_close_terms B UV Fs Gs, pi f\ e_u_close_terms B UV (Ts f) (Us f).
+e_u_close_term B UV T T.
+
+% The oracle still judges every fix before elaboration can erase it. It
+% judges the fix in the form that `elab` gives it (the return clause of each
+% match in normal form by beta and iota), as the kernel does where it types a
+% fix and as Rocq judges a fix whose bodies it has elaborated: a recursive
+% call that is not in the normal form of a return clause is not judged. Only
+% declaration-level level cells may be reabstracted by this scoped protocol.
+type e_guard (tm -> o).
+e_guard X :- u_recording, !, elab X E, u_guard_candidate E.
+e_guard X :- elab X E, oracle "guarded" E.
+u_guard_candidate X :- u_parameters UV, e_u_cells Cells, u_context Given,
+    e_u_append UV Cells Parameters, u_stream Q, u_flat Q Pending [], e_u_resolve_defaults Pending Given Current,
+    e_u_append Given Current Constraints,
+    (u_inference_parameters Parameters => u_inference_context Constraints =>
+        oracle "guarded" X).

@@ -1,0 +1,58 @@
+(* Booleans and their algebra, with case proofs rather than assumed laws. *)
+Import lol.theories.Logic.
+Import lol.theories.Nat.
+Inductive bool : Set := | true : bool | false : bool.
+Definition bool_case {A : Set} (t f : A) (b : bool) : A := match b with | true => t | false => f end.
+Definition negb (b : bool) : bool := match b with | true => false | false => true end.
+Definition andb (a b : bool) : bool := match a with | true => b | false => false end.
+Definition orb (a b : bool) : bool := match a with | true => true | false => b end.
+Definition implb (a b : bool) : bool := match a with | true => b | false => true end.
+Definition xorb (a b : bool) : bool := match a with | true => negb b | false => b end.
+Definition eqb (a b : bool) : bool := match a with | true => b | false => negb b end.
+Definition bool_to_nat (b : bool) : nat := match b with | true => one | false => O end.
+Definition is_zero (n : nat) : bool := match n with | O => true | S p => false end.
+Definition Is_true (b : bool) : Prop := match b with | true => True | false => False end.
+Fixpoint evenb (n : nat) : bool := match n with | O => true | S p => oddb p end
+with oddb (n : nat) : bool := match n with | O => false | S p => evenb p end.
+Fixpoint nat_eqb (n m : nat) : bool := match n with | O => is_zero m | S p => match m with | O => false | S q => nat_eqb p q end end.
+Fixpoint leb (n m : nat) : bool := match n with | O => true | S p => match m with | O => false | S q => leb p q end end.
+Definition ltb (n m : nat) : bool := leb (S n) m.
+Theorem negb_involutive : forall a : bool, ((negb (negb a)) = (a)) := fun a => match a with | true => eq_refl (negb (negb true)) | false => eq_refl (negb (negb false)) end.
+Theorem andb_true_left : forall a : bool, ((andb true a) = (a)) := fun a => match a with | true => eq_refl (andb true true) | false => eq_refl (andb true false) end.
+Theorem andb_true_right : forall a : bool, ((andb a true) = (a)) := fun a => match a with | true => eq_refl (andb true true) | false => eq_refl (andb false true) end.
+Theorem andb_false_left : forall a : bool, ((andb false a) = (false)) := fun a => match a with | true => eq_refl (andb false true) | false => eq_refl (andb false false) end.
+Theorem andb_false_right : forall a : bool, ((andb a false) = (false)) := fun a => match a with | true => eq_refl (andb true false) | false => eq_refl (andb false false) end.
+Theorem orb_true_left : forall a : bool, ((orb true a) = (true)) := fun a => match a with | true => eq_refl (orb true true) | false => eq_refl (orb true false) end.
+Theorem orb_true_right : forall a : bool, ((orb a true) = (true)) := fun a => match a with | true => eq_refl (orb true true) | false => eq_refl (orb false true) end.
+Theorem orb_false_left : forall a : bool, ((orb false a) = (a)) := fun a => match a with | true => eq_refl (orb false true) | false => eq_refl (orb false false) end.
+Theorem orb_false_right : forall a : bool, ((orb a false) = (a)) := fun a => match a with | true => eq_refl (orb true false) | false => eq_refl (orb false false) end.
+Theorem andb_idempotent : forall a : bool, ((andb a a) = (a)) := fun a => match a with | true => eq_refl (andb true true) | false => eq_refl (andb false false) end.
+Theorem orb_idempotent : forall a : bool, ((orb a a) = (a)) := fun a => match a with | true => eq_refl (orb true true) | false => eq_refl (orb false false) end.
+Theorem andb_complement : forall a : bool, ((andb a (negb a)) = (false)) := fun a => match a with | true => eq_refl (andb true (negb true)) | false => eq_refl (andb false (negb false)) end.
+Theorem orb_complement : forall a : bool, ((orb a (negb a)) = (true)) := fun a => match a with | true => eq_refl (orb true (negb true)) | false => eq_refl (orb false (negb false)) end.
+Theorem xorb_self : forall a : bool, ((xorb a a) = (false)) := fun a => match a with | true => eq_refl (xorb true true) | false => eq_refl (xorb false false) end.
+Theorem eqb_refl : forall a : bool, ((eqb a a) = (true)) := fun a => match a with | true => eq_refl (eqb true true) | false => eq_refl (eqb false false) end.
+Theorem implb_refl : forall a : bool, ((implb a a) = (true)) := fun a => match a with | true => eq_refl (implb true true) | false => eq_refl (implb false false) end.
+Theorem xorb_false : forall a : bool, ((xorb a false) = (a)) := fun a => match a with | true => eq_refl (xorb true false) | false => eq_refl (xorb false false) end.
+Theorem andb_comm : forall a b : bool, ((andb a b) = (andb b a)) := fun a b => match a with | true => match b with | true => eq_refl (andb true true) | false => eq_refl (andb true false) end | false => match b with | true => eq_refl (andb false true) | false => eq_refl (andb false false) end end.
+Theorem orb_comm : forall a b : bool, ((orb a b) = (orb b a)) := fun a b => match a with | true => match b with | true => eq_refl (orb true true) | false => eq_refl (orb true false) end | false => match b with | true => eq_refl (orb false true) | false => eq_refl (orb false false) end end.
+Theorem xorb_comm : forall a b : bool, ((xorb a b) = (xorb b a)) := fun a b => match a with | true => match b with | true => eq_refl (xorb true true) | false => eq_refl (xorb true false) end | false => match b with | true => eq_refl (xorb false true) | false => eq_refl (xorb false false) end end.
+Theorem eqb_comm : forall a b : bool, ((eqb a b) = (eqb b a)) := fun a b => match a with | true => match b with | true => eq_refl (eqb true true) | false => eq_refl (eqb true false) end | false => match b with | true => eq_refl (eqb false true) | false => eq_refl (eqb false false) end end.
+Theorem negb_andb : forall a b : bool, ((negb (andb a b)) = (orb (negb a) (negb b))) := fun a b => match a with | true => match b with | true => eq_refl (negb (andb true true)) | false => eq_refl (negb (andb true false)) end | false => match b with | true => eq_refl (negb (andb false true)) | false => eq_refl (negb (andb false false)) end end.
+Theorem negb_orb : forall a b : bool, ((negb (orb a b)) = (andb (negb a) (negb b))) := fun a b => match a with | true => match b with | true => eq_refl (negb (orb true true)) | false => eq_refl (negb (orb true false)) end | false => match b with | true => eq_refl (negb (orb false true)) | false => eq_refl (negb (orb false false)) end end.
+Theorem andb_absorb : forall a b : bool, ((andb a (orb a b)) = (a)) := fun a b => match a with | true => match b with | true => eq_refl (andb true (orb true true)) | false => eq_refl (andb true (orb true false)) end | false => match b with | true => eq_refl (andb false (orb false true)) | false => eq_refl (andb false (orb false false)) end end.
+Theorem orb_absorb : forall a b : bool, ((orb a (andb a b)) = (a)) := fun a b => match a with | true => match b with | true => eq_refl (orb true (andb true true)) | false => eq_refl (orb true (andb true false)) end | false => match b with | true => eq_refl (orb false (andb false true)) | false => eq_refl (orb false (andb false false)) end end.
+Theorem implb_as_or : forall a b : bool, ((implb a b) = (orb (negb a) b)) := fun a b => match a with | true => match b with | true => eq_refl (implb true true) | false => eq_refl (implb true false) end | false => match b with | true => eq_refl (implb false true) | false => eq_refl (implb false false) end end.
+Theorem eqb_as_not_xor : forall a b : bool, ((eqb a b) = (negb (xorb a b))) := fun a b => match a with | true => match b with | true => eq_refl (eqb true true) | false => eq_refl (eqb true false) end | false => match b with | true => eq_refl (eqb false true) | false => eq_refl (eqb false false) end end.
+Theorem andb_assoc : forall a b c : bool, ((andb (andb a b) c) = (andb a (andb b c))) := fun a b c => match a with | true => match b with | true => match c with | true => eq_refl (andb (andb true true) true) | false => eq_refl (andb (andb true true) false) end | false => match c with | true => eq_refl (andb (andb true false) true) | false => eq_refl (andb (andb true false) false) end end | false => match b with | true => match c with | true => eq_refl (andb (andb false true) true) | false => eq_refl (andb (andb false true) false) end | false => match c with | true => eq_refl (andb (andb false false) true) | false => eq_refl (andb (andb false false) false) end end end.
+Theorem orb_assoc : forall a b c : bool, ((orb (orb a b) c) = (orb a (orb b c))) := fun a b c => match a with | true => match b with | true => match c with | true => eq_refl (orb (orb true true) true) | false => eq_refl (orb (orb true true) false) end | false => match c with | true => eq_refl (orb (orb true false) true) | false => eq_refl (orb (orb true false) false) end end | false => match b with | true => match c with | true => eq_refl (orb (orb false true) true) | false => eq_refl (orb (orb false true) false) end | false => match c with | true => eq_refl (orb (orb false false) true) | false => eq_refl (orb (orb false false) false) end end end.
+Theorem xorb_assoc : forall a b c : bool, ((xorb (xorb a b) c) = (xorb a (xorb b c))) := fun a b c => match a with | true => match b with | true => match c with | true => eq_refl (xorb (xorb true true) true) | false => eq_refl (xorb (xorb true true) false) end | false => match c with | true => eq_refl (xorb (xorb true false) true) | false => eq_refl (xorb (xorb true false) false) end end | false => match b with | true => match c with | true => eq_refl (xorb (xorb false true) true) | false => eq_refl (xorb (xorb false true) false) end | false => match c with | true => eq_refl (xorb (xorb false false) true) | false => eq_refl (xorb (xorb false false) false) end end end.
+Theorem andb_distributes : forall a b c : bool, ((andb a (orb b c)) = (orb (andb a b) (andb a c))) := fun a b c => match a with | true => match b with | true => match c with | true => eq_refl (andb true (orb true true)) | false => eq_refl (andb true (orb true false)) end | false => match c with | true => eq_refl (andb true (orb false true)) | false => eq_refl (andb true (orb false false)) end end | false => match b with | true => match c with | true => eq_refl (andb false (orb true true)) | false => eq_refl (andb false (orb true false)) end | false => match c with | true => eq_refl (andb false (orb false true)) | false => eq_refl (andb false (orb false false)) end end end.
+Theorem orb_distributes : forall a b c : bool, ((orb a (andb b c)) = (andb (orb a b) (orb a c))) := fun a b c => match a with | true => match b with | true => match c with | true => eq_refl (orb true (andb true true)) | false => eq_refl (orb true (andb true false)) end | false => match c with | true => eq_refl (orb true (andb false true)) | false => eq_refl (orb true (andb false false)) end end | false => match b with | true => match c with | true => eq_refl (orb false (andb true true)) | false => eq_refl (orb false (andb true false)) end | false => match c with | true => eq_refl (orb false (andb false true)) | false => eq_refl (orb false (andb false false)) end end end.
+Theorem evenb_O : ((evenb O) = true) := eq_refl true.
+Theorem oddb_O : ((oddb O) = false) := eq_refl false.
+Theorem evenb_S : forall n : nat, ((evenb (S n)) = (oddb n)) := fun n => eq_refl (oddb n).
+Theorem oddb_S : forall n : nat, ((oddb (S n)) = (evenb n)) := fun n => eq_refl (evenb n).
+Theorem leb_O : forall n : nat, ((leb O n) = true) := fun n => eq_refl true.
+Theorem nat_eqb_refl : forall n : nat, ((nat_eqb n n) = true) := fix go (n : nat) : ((nat_eqb n n) = true) := match n with | O => eq_refl true | S p => go p end.
+Theorem leb_refl : forall n : nat, ((leb n n) = true) := fix go (n : nat) : ((leb n n) = true) := match n with | O => eq_refl true | S p => go p end.

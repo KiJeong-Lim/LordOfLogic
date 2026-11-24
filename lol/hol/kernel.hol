@@ -1,0 +1,2059 @@
+% lol/hol/kernel.hol
+%
+% The kernel of LoL: the judgments of its calculus of inductive constructions
+% as a Hol program.
+%
+% Part I: sorts, products, abstraction, application, let, constants,
+% reduction, conversion and cumulativity.
+% Part II: inductive families and match.
+% Part III: fix and the guard condition.
+%
+% A comment before a clause, or before consecutive clauses, names the rule
+% that they implement or says what they compute. `flex M`, a builtin of Hol,
+% holds when M is a hole: a term whose head is an unbound logic variable. A
+% clause labelled (K4) is the `flex` clause with which a predicate that looks
+% at the shape of a term treats a hole. `oracle Name T`, another builtin,
+% hands the term T to the host under a name and holds when the host says yes.
+% Strict positivity and the guard condition always use this FFI.
+
+% ------------------------------------------------------------------------------
+% Core terms
+% ------------------------------------------------------------------------------
+
+kind tm type.
+kind lvl type.
+
+type lz lvl.
+type ls (lvl -> lvl).
+type lp (nat -> lvl).
+type lg (nat -> nat -> lvl).
+type lu (lvl -> lvl).
+type lm (lvl -> lvl -> lvl).
+type lv (nat -> lvl).
+type lf (nat -> lvl).
+type lb lvl.
+
+type prop tm.
+type typ (lvl -> tm).
+type cst (nat -> list lvl -> tm).
+type ind (nat -> nat -> list lvl -> tm).
+type con (nat -> nat -> nat -> list lvl -> tm).
+type prod (tm -> (tm -> tm) -> tm).
+type lam (tm -> (tm -> tm) -> tm).
+type letin (tm -> tm -> (tm -> tm) -> tm).
+% cast M A: the term M with the type A that is written for it, `(M : A)`
+type cast (tm -> tm -> tm).
+type app (tm -> tm -> tm).
+% proj B J R: field J of the sole family of primitive block B, applied to R.
+% pfield is its ordinary function, abstracted over the parameters and receiver.
+type proj (nat -> nat -> tm -> tm).
+type pfield (nat -> nat -> list lvl -> tm).
+type abs ((tm -> tm) -> tm).
+% cas F P T Bs: F is the family of the match applied to the parameters that
+% the match keeps.
+type cas (tm -> tm -> tm -> list tm -> tm).
+type fix (nat -> list nat -> list tm -> ((nat -> tm) -> list tm) -> tm).
+
+% ------------------------------------------------------------------------------
+% The environment, and the local context: a local variable is introduced by
+% `pi` and typed by a hypothesis
+% ------------------------------------------------------------------------------
+
+% Elim(I): every sort, or Prop only.
+kind elim type.
+
+type elim_all elim.
+type elim_prop elim.
+
+% Whether an argument of a constructor is recursive.
+kind mark type.
+
+type rec mark.
+type nonrec mark.
+
+% cst_type N A: constant N is declared with type A.
+% cst_body N T: constant N is a `Definition` with body T.
+type cst_type (nat -> list lvl -> tm -> o).
+type cst_body (nat -> list lvl -> tm -> o).
+
+% ind_type B I A: family I of block B has type A, parameters included.
+% con_type B I J A: constructor J of that family has type A, parameters
+% included.
+% ind_info B I N E Ms: the family has N parameters and the elimination E; Ms
+% has, for each of its constructors in order, a mark for each argument.
+type ind_type (nat -> nat -> list lvl -> tm -> o).
+type con_type (nat -> nat -> nat -> list lvl -> tm -> o).
+type ind_info (nat -> nat -> list lvl -> nat -> elim -> list (list mark) -> o).
+% This fact is installed only after u_record_shape has checked the block.
+% Eta is 1 for a nonrecursive Record and 0 for the Inductive form.
+type record_info (nat -> nat -> nat -> o).
+
+% var_type X A: (X : A) or (X := T : A) is in the context.
+% var_body X T: (X := T : A) is in the context.
+type var_type (tm -> tm -> o).
+type var_body (tm -> tm -> o).
+
+% What a check that is under way assumes.
+% in_block X: X is a family of the block that [I-Index] looks at.
+type in_block (tm -> o).
+
+% The oracle.
+% nolet: a `let` at the head of a term is where weak head reduction stops, as
+% `whd_allnolet` of Rocq stops there. The oracle asks under it.
+type nolet o.
+% A host oracle may ask the kernel for the weak head of a term. `oracle_halt`
+% keeps a head `let`; `oracle_head` unfolds it. Both use the caller's context.
+kind oracle_request type.
+type oracle_head (tm -> oracle_request).
+type oracle_halt (tm -> oracle_request).
+type oracle_answer (oracle_request -> tm -> o).
+
+% Elaboration.
+% pretyping: the term is typed as it is written, which gives the parameters of
+% its matches. Strict positivity is judged of the elaborated declaration.
+% The oracle judges (F-Struct) and the guard condition of each elaborated
+% function block as soon as it is typed, and again in the final run.
+% zeta: `bi` unfolds a let too.
+type pretyping o.
+type zeta o.
+
+% ------------------------------------------------------------------------------
+% Reports
+% ------------------------------------------------------------------------------
+
+kind report type.
+
+% rep L Ts: the rule labelled L rejects; Ts are the terms involved.
+type rep (string -> list tm -> report).
+
+type expect (o -> report -> o).
+
+expect G R :- G, !.
+% The terms of a report are those that the host shows (shown): the type of a
+% `let` is in them when it is a proposition.
+expect G (rep L Ts) :- shown_all Ts Ns, !, print (rep L Ns), fail.
+expect G R :- print R, fail.
+
+% ------------------------------------------------------------------------------
+% Judgments
+% ------------------------------------------------------------------------------
+
+type infer (tm -> tm -> o).
+type check (tm -> tm -> o).
+type sort_of (string -> tm -> tm -> o).
+type is_sort (tm -> o).
+type prod_sort (tm -> tm -> tm -> o).
+type lle (lvl -> lvl -> o).
+type lmax (lvl -> lvl -> lvl -> o).
+type whnf (tm -> tm -> o).
+type whnf_app (tm -> tm -> tm -> o).
+type whnf_cst (nat -> list lvl -> tm -> o).
+type conv (tm -> tm -> o).
+type conv_whnf (tm -> tm -> o).
+type conv_all (list tm -> list tm -> o).
+type sub (tm -> tm -> o).
+type sub_whnf (tm -> tm -> o).
+type norm (tm -> tm -> o).
+type norm_whnf (tm -> tm -> o).
+type norm_all (list tm -> list tm -> o).
+type admit_ax (tm -> o).
+type admit_def (tm -> tm -> o).
+
+% Positions and applications.
+type nth (nat -> list A -> A -> o).
+type split (nat -> list A -> list A -> list A -> o).
+type rev (list A -> list A -> list A -> o).
+type head (tm -> tm -> o).
+type spine (tm -> tm -> list tm -> o).
+type spine_onto (tm -> list tm -> tm -> list tm -> o).
+type apps (tm -> list tm -> tm -> o).
+type inst (tm -> list tm -> tm -> o).
+type outside (tm -> o).
+type outside_all (list tm -> o).
+type match_on (tm -> nat -> nat -> list lvl -> o).
+type match_head (tm -> nat -> nat -> list lvl -> o).
+
+% Match.
+type params (list tm -> list tm -> o).
+type bi (tm -> tm -> o).
+type elab (tm -> tm -> o).
+
+% What the host shows of a term.
+% untyped: the type of a `let` that is not shown.
+type untyped tm.
+type visible (tm -> tm -> o).
+type visible_all (list tm -> list tm -> o).
+type visible_type (tm -> tm -> o).
+type visible_return (tm -> tm -> tm -> tm -> o).
+type visible_branches (nat -> nat -> list lvl -> nat -> list tm -> list tm -> list tm -> o).
+type visible_branch (tm -> tm -> tm -> o).
+type retype (tm -> tm -> o).
+type retype_sort (tm -> o).
+type shown (tm -> tm -> o).
+type shown_all (list tm -> list tm -> o).
+type has_let (tm -> o).
+type has_let_any (list tm -> o).
+type elab_all (list tm -> list tm -> o).
+type bi_all (list tm -> list tm -> o).
+type bi_app (tm -> tm -> tm -> o).
+type bi_fix (tm -> list tm -> tm -> tm -> tm -> o).
+type bi_rec (nat -> list tm -> tm -> list tm -> tm -> tm -> tm -> o).
+type bi_unfold (tm -> tm -> list tm -> tm -> tm -> tm -> o).
+type bi_cas (tm -> list tm -> tm -> tm -> tm -> list tm -> tm -> o).
+type bi_arm (tm -> list tm -> tm -> o).
+type ret_sort (tm -> tm -> tm -> tm -> o).
+type ret_whnf (tm -> tm -> (tm -> tm) -> tm -> o).
+type ret_type (tm -> list tm -> tm -> tm -> o).
+type elim_at (elim -> tm -> o).
+type branches (nat -> nat -> list lvl -> nat -> nat -> list tm -> tm -> list (list mark) -> list tm -> o).
+type branch (nat -> tm -> tm -> tm -> tm -> o).
+type branch_whnf (nat -> tm -> tm -> tm -> tm -> o).
+type whnf_cas (tm -> list tm -> tm -> tm -> tm -> list tm -> tm -> o).
+type whnf_arm (tm -> list tm -> tm -> tm -> o).
+
+% Fix and the guard condition.
+type fix_types (list nat -> list tm -> o).
+type fix_bodies (list tm -> list tm -> o).
+type fix_guarded (tm -> list nat -> ((nat -> tm) -> list tm) -> o).
+type fix_judged (tm -> o).
+type whnf_fix (tm -> tm -> tm -> tm -> o).
+type whnf_rec (nat -> list tm -> tm -> list tm -> tm -> tm -> tm -> o).
+type whnf_unfold (tm -> tm -> list tm -> tm -> tm -> tm -> o).
+
+% Inductive declarations.
+kind family type.
+kind block type.
+kind info type.
+
+% family A Ts: a family of type A whose constructors have the types Ts.
+% block B N Fs: block number B, with N parameters and the families Fs. The
+% types A and Ts include the parameters.
+% info N E Ms: what ind_info says of one family.
+type family (tm -> list tm -> family).
+type block (nat -> nat -> list family -> block).
+type info (nat -> elim -> list (list mark) -> info).
+
+type admit_ind (block -> list info -> o).
+type positive_block (block -> o).
+type arities (nat -> tm -> list family -> list tm -> o).
+type arity (nat -> tm -> tm -> tm -> o).
+type indices (tm -> tm -> o).
+type indices_whnf (tm -> tm -> tm -> o).
+type families (nat -> nat -> tm -> nat -> list family -> list tm -> list info -> o).
+type constructors (nat -> nat -> tm -> nat -> tm -> list tm -> list (list mark) -> list elim -> o).
+type con_params (nat -> tm -> tm -> list tm -> nat -> nat -> tm -> list mark -> elim -> o).
+type con_args (tm -> nat -> nat -> list tm -> tm -> list mark -> elim -> o).
+type con_whnf (tm -> nat -> nat -> list tm -> tm -> list mark -> elim -> o).
+type uniform (list tm -> list tm -> list tm -> o).
+type in_univ (tm -> tm -> o).
+type proofs (tm -> elim -> elim -> o).
+type argument (nat -> tm -> mark -> o).
+type marked (nat -> tm -> mark -> o).
+type marked_whnf (nat -> tm -> mark -> o).
+type marked_head (tm -> nat -> mark -> o).
+type no_family (nat -> list tm -> o).
+type fam_elim (tm -> list elim -> elim -> o).
+
+% ------------------------------------------------------------------------------
+% Levels
+% ------------------------------------------------------------------------------
+
+% l <= l'
+lle L M :- u_inequality L M.
+
+% max(l1, l2)
+lmax L M N :- u_closed L, u_closed M, !, u_closed_max L M N.
+lmax L M (lm L M).
+
+% ------------------------------------------------------------------------------
+% Sorts
+% ------------------------------------------------------------------------------
+
+% s is a sort
+is_sort prop :- !.
+is_sort (typ L).
+
+% [P-Prop]
+prod_sort S prop R :- !, R = prop.
+% [P-Type]
+prod_sort prop (typ L) R :- !, R = typ L.
+% [P-Max]
+prod_sort (typ L1) (typ L2) (typ L) :- lmax L1 L2 L.
+
+% E; G |- A : s, as a premise of the rule labelled R. The type of A is reduced
+% to weak head normal form.
+sort_of R A S :-
+    infer A T, whnf T W,
+    expect (is_sort W) (rep R (A :: T :: [])),
+    S = W.
+
+% ------------------------------------------------------------------------------
+% Positions and applications
+% ------------------------------------------------------------------------------
+
+% A position is a numeral of Hol, counted from 0. It is matched against `s N`
+% and built with `s`, and nothing else is done with it: no goal is an
+% equality of numerals, which Hol would give to its arithmetic.
+
+% nth N Xs X: X is at position N of Xs
+nth 0 (X :: Xs) X :- !.
+nth (s N) (X :: Xs) Y :- nth N Xs Y.
+
+% split N Xs Ys Zs: Ys are the first N of Xs and Zs are the others
+split 0 Xs [] Xs :- !.
+split (s N) (X :: Xs) (X :: Ys) Zs :- split N Xs Ys Zs.
+
+% rev Xs Ys Zs: Zs is the reverse of Xs followed by Ys
+rev [] Ys Ys :- !.
+rev (X :: Xs) Ys Zs :- rev Xs (X :: Ys) Zs.
+
+% spine T H As: T is H applied to As, and H is not an application; a cast
+% on the way to H is passed
+spine T H As :- spine_onto T [] H As.
+
+% (K4)
+spine_onto T As H Bs :- flex T, !, H = T, Bs = As.
+spine_onto (app F A) As H Bs :- !, spine_onto F (A :: As) H Bs.
+spine_onto (cast M A) As H Bs :- !, spine_onto M As H Bs.
+spine_onto H As H As.
+
+% apps F As T: T is F applied to As
+apps F [] F :- !.
+apps F (A :: As) T :- apps (app F A) As T.
+
+% inst T As U: U is the product T with its first variables replaced by As. T
+% is a type of the environment: it has that many products.
+inst T [] T :- !.
+inst (prod A B) (X :: Xs) U :- inst (B X) Xs U.
+
+% outside T: nothing that in_block names occurs in T
+% (K4)
+outside T :- flex T, !, fail.
+outside (prod A B) :- !, outside A, pi x\ outside (B x).
+outside (lam A F) :- !, outside A, pi x\ outside (F x).
+outside (letin T A U) :- !, outside T, outside A, pi x\ outside (U x).
+outside (cast M A) :- !, outside M, outside A.
+outside (proj B J R) :- !, outside R.
+outside (app M N) :- !, outside M, outside N.
+outside (abs F) :- !, pi x\ outside (F x).
+outside (cas F P T Bs) :- !,
+    outside F, outside P, outside T, outside_all Bs.
+outside (fix K Ns Fs Ts) :- !, outside_all Fs, pi f\ outside_all (Ts f).
+outside T :- in_block T, !, fail.
+outside T.
+
+outside_all [] :- !.
+outside_all (T :: Ts) :- outside T, outside_all Ts.
+
+% match_on F B I: F is family I of block B, applied to parameters
+match_on F B I UV :- head F H, match_head H B I UV.
+
+% (K4)
+match_head H B I UV :- flex H, !, fail.
+match_head (ind B I UV) B I UV.
+
+% ------------------------------------------------------------------------------
+% Typing
+% ------------------------------------------------------------------------------
+
+% (K4)
+infer M A :- flex M, !, fail.
+% [T-Sort] with [S-Prop]
+infer prop A :- !, A = typ (ls lz).
+% [T-Sort] with [S-Type]
+infer (typ L) A :- !, u_level L, u_successor L Next, A = typ Next.
+% [T-Const]
+infer (cst N UV) A :- !, expect (cst_type N UV A) (rep "T-Const" (cst N UV :: [])).
+% [T-Ind]
+infer (ind B I UV) A :- !, template_defaults (ind B I UV), application_head (ind B I UV) A.
+% [T-Constr]
+infer (con B I J UV) A :- !, template_defaults (con B I J UV), application_head (con B I J UV) A.
+% [T-Pi]
+infer (prod A B) S :- !,
+    sort_of "T-Pi" A S1,
+    (pi x\ var_type x A => sort_of "T-Pi" (B x) S2),
+    prod_sort S1 S2 S.
+% [T-Lam]
+infer (lam A F) T :- !,
+    sort_of "T-Lam" A _,
+    (pi x\ var_type x A => infer (F x) (G x)),
+    T = prod A G.
+% [T-Proj] Get the parameter instance from the receiver's type. Earlier
+% fields in the field telescope are instantiated with projections of R.
+infer (proj B J R) A :- !, infer R T,
+    expect (record_type B J R T A) (rep "T-Proj" (R :: T :: [])).
+% [T-Field] The unsaturated field name denotes the compatibility function.
+infer (pfield B J UV) A :- !, template_defaults (pfield B J UV), application_head (pfield B J UV) A.
+% [T-App] Without a template declaration every product has its written
+% codomain. Both paths check the same argument against the same domain.
+infer (app M N) T :- template_active, !, template_owner_defaults (app M N), application_type M N T.
+infer (app M N) T :- !, infer M TM, apply_product M N TM T.
+% [T-Let]
+infer (letin T A U) R :- !,
+    sort_of "T-Let" A _,
+    check T A,
+    (pi x\ var_type x A => var_body x T => infer (U x) (B x)),
+    R = B T.
+% [T-Cast]
+infer (cast M A) R :- !,
+    sort_of "T-Cast" A _,
+    check M A,
+    R = A.
+% [T-Match]: (M-Scrut), (M-Params), (M-Ret), (M-Elim), (M-Branch) with
+% (M-Cover), and the type P[ys := vs, x := t]. F is the family applied to the
+% parameters Ps that the match keeps; Qs are the parameters of the type of the
+% scrutinee and Vs its indices.
+infer (cas F P T Bs) A :- !,
+    spine F H Ps,
+    expect (match_head H B I UV) (rep "T-Match" (F :: [])),
+    infer T TT, whnf TT W, spine W G As,
+    expect (G = ind B I UW, template_match_instance B UV UW) (rep "T-Match" (T :: TT :: [])),
+    expect (ind_info B I UV N E Ms) (rep "T-Match" (ind B I UV :: [])),
+    split N As Qs Vs,
+    expect (params Qs Ps) (rep "T-Match" (F :: TT :: [])),
+    % Conversion to the scrutinee parameters may erase an ill-typed redex.
+    infer F AT,
+    expect (conv_all Qs Ps) (rep "T-Match" (F :: TT :: [])),
+    expect (ret_sort AT F P S) (rep "T-Match" (P :: [])),
+    expect (record_motive B P) (rep "T-Record-Elim" (F :: [])),
+    expect (elim_at E S) (rep "I-Elim-Prop" (ind B I UV :: S :: [])),
+    branches B I UV 0 N Ps P Ms Bs,
+    ret_type P Vs T A.
+% a binder of a match where no match has it
+infer (abs F) A :- !, expect fail (rep "T-Match" (abs F :: [])).
+% [T-Fix]: (F-Type) with (F-Struct), (F-Body), (F-Guard), and the type F_k
+infer (fix K Ns Fs Ts) A :- !,
+    fix_types Ns Fs,
+    (pi f\ (pi j\ pi a\ (var_type (f j) a :- nth j Fs a)) =>
+        fix_bodies Fs (Ts f)),
+    fix_guarded (fix K Ns Fs Ts) Ns Ts,
+    expect (nth K Fs A) (rep "T-Fix" (fix K Ns Fs Ts :: [])).
+% [T-Var]
+infer X A :- expect (var_type X A) (rep "T-Var" (X :: [])).
+
+% (K4)
+check M A :- flex M, !, fail.
+% [T-Conv], as `check` uses it
+check M A :- infer M B, expect (sub B A) (rep "T-Conv" (M :: B :: A :: [])).
+
+% ------------------------------------------------------------------------------
+% Match
+% ------------------------------------------------------------------------------
+
+% (M-Params): the parameters that a match keeps are those of the type of its
+% scrutinee. A parameter that is a hole takes the parameter of that type, in
+% normal form by beta, iota and zeta.
+params [] [] :- !.
+% (K4)
+params (Q :: Qs) (P :: Ps) :- flex P, !, (zeta => bi Q N), P = N, params Qs Ps.
+params (Q :: Qs) (P :: Ps) :- params Qs Ps.
+
+% (M-Ret): the return clause binds the indices and then the scrutinee. A is
+% what is left of the arity, reduced as far as each product, and F is the
+% family applied to the parameters and to the indices bound so far.
+% (K4)
+ret_sort A F P S :- flex P, !, fail.
+ret_sort A F (abs P) S :- whnf A W, ret_whnf W F P S.
+
+ret_whnf (prod Y A) F P S :- !,
+    pi y\ var_type y Y => ret_sort (A y) (app F y) (P y) S.
+ret_whnf A F P S :- pi x\ var_type x F => sort_of "T-Match" (P x) S.
+
+% P[ys := us, x := t]
+ret_type (abs P) [] X A :- !, A = P X.
+ret_type (abs P) (U :: Us) X A :- ret_type (P U) Us X A.
+
+% (M-Elim): s is in Elim(I)
+elim_at elim_all S :- !.
+elim_at elim_prop prop.
+
+% (M-Cover): one branch for each constructor, in declaration order. J is the
+% number of the next constructor; the marks tell how many constructors remain.
+branches B I UV J N Qs P [] [] :- !.
+branches B I UV J N Qs P (M :: Ms) (Br :: Bs) :- !,
+    con_type B I J UV CT, inst CT Qs T, apps (con B I J UV) Qs C,
+    branch N T C P Br,
+    branches B I UV (s J) N Qs P Ms Bs.
+branches B I UV J N Qs P Ms Bs :- expect fail (rep "T-Match" Bs).
+
+% (M-Branch): a branch binds the arguments of its constructor, and its body
+% has the type P[ys := us, x := C qs zs]. T is what is left of the type of the
+% constructor, reduced as far as each product, and C is the constructor applied
+% to the parameters and to the arguments bound so far.
+% (K4)
+branch N T C P Br :- flex Br, !, fail.
+branch N T C P Br :- whnf T W, branch_whnf N W C P Br.
+
+branch_whnf N (prod Z T) C P Br :- !,
+    expect (Br = abs F) (rep "T-Match" (Br :: [])),
+    pi z\ var_type z Z => branch N (T z) (app C z) P (F z).
+branch_whnf N T C P Br :-
+    spine T H As, split N As Qs Us, ret_type P Us C A, check Br A.
+
+% ------------------------------------------------------------------------------
+% Fix
+% ------------------------------------------------------------------------------
+
+% (F-Type), for each function. The oracle judges (F-Struct) with the guard.
+fix_types [] [] :- !.
+fix_types (N :: Ns) (F :: Fs) :- !,
+    sort_of "T-Fix" F _, fix_types Ns Fs.
+fix_types Ns Fs :- expect fail (rep "T-Fix" Fs).
+
+% (F-Body): each body has the type of its function
+fix_bodies [] [] :- !.
+fix_bodies (F :: Fs) (T :: Ts) :- !, check T F, fix_bodies Fs Ts.
+fix_bodies Fs Ts :- expect fail (rep "T-Fix" Ts).
+
+% (F-Guard) for the block of functions X. A block of a term that is being
+% elaborated is judged in the form that `elab` gives it, now that it is
+% typed: the elaborator of Rocq judges a `fix` when it has elaborated its
+% bodies. So `bi` and the reduction of a later step unfold no function that
+% was not judged, and a function that elaboration erases is judged too.
+fix_guarded X Ns Ts :- pretyping, !, elab X E, fix_judged E.
+fix_guarded X Ns Ts :- fix_judged X.
+
+% The host judges the block through Hol's FFI.
+fix_judged X :- u_recording, !,
+    expect (u_guard_candidate X) (rep "F-Guard" (X :: [])).
+fix_judged X :-
+    expect (oracle "guarded" X) (rep "F-Guard" (X :: [])).
+
+% ------------------------------------------------------------------------------
+% Reduction to weak head normal form
+% ------------------------------------------------------------------------------
+
+% A request hole does not select a command. Holes inside a known request keep
+% the behavior of `whnf` below.
+oracle_answer R W :- flex R, !, fail.
+oracle_answer (oracle_head T) W :- !, whnf T W.
+oracle_answer (oracle_halt T) W :- !, (nolet => whnf T W).
+
+% (K4)
+whnf M W :- flex M, !, W = M.
+% an application: reduce the head, then [R-Beta] or [R-Fix]
+whnf (app M N) W :- !, whnf M F, whnf_app F N W.
+% [R-Proj] A neutral receiver stays neutral. Do not instantiate a receiver
+% hole by guessing a constructor.
+whnf (proj B J R) W :- !, whnf R C, record_whnf B J C W.
+whnf (pfield B J UV) W :- !, record_function B J UV _ W.
+% [R-Zeta], which a run under `nolet` does not do
+whnf (letin T A U) W :- nolet, !, W = letin T A U.
+whnf (letin T A U) W :- !, whnf (U T) W.
+% [R-Cast]: a cast reduces to its term, under `nolet` too
+whnf (cast M A) W :- !, whnf M W.
+% a constant: [R-Delta]
+whnf (cst N UV) W :- !, whnf_cst N UV W.
+% a match: reduce the scrutinee, then [R-Iota]
+whnf (cas I P T Bs) W :- !, whnf T C, spine C H As, whnf_cas H As I P C Bs W.
+% sorts, products, abstractions, families, constructors, blocks of functions
+% and the binders of a match are weak head normal
+whnf prop W :- !, W = prop.
+whnf (typ L) W :- !, W = typ L.
+whnf (prod A B) W :- !, W = prod A B.
+whnf (lam A F) W :- !, W = lam A F.
+whnf (ind B I UV) W :- !, W = ind B I UV.
+whnf (con B I J UV) W :- !, W = con B I J UV.
+whnf (fix K Ns Fs Ts) W :- !, W = fix K Ns Fs Ts.
+whnf (abs F) W :- !, W = abs F.
+% [R-Local]
+whnf X W :- var_body X T, !, whnf T W.
+% a variable without a definition is weak head normal
+whnf X X.
+
+% (K4)
+whnf_app F N W :- flex F, !, W = app F N.
+% [R-Beta]
+whnf_app (lam A F) N W :- !, whnf (F N) W.
+% [R-Fix], when a block of functions is the head of F
+whnf_app (fix K Ns Fs Ts) N W :- !, whnf_fix (fix K Ns Fs Ts) (fix K Ns Fs Ts) N W.
+whnf_app (app F A) N W :- !, head (app F A) H, whnf_fix H (app F A) N W.
+% an application of anything else is weak head normal
+whnf_app F N (app F N).
+
+% head T H: T is H applied to arguments, and H is not an application
+% (K4)
+head T H :- flex T, !, H = T.
+head (app F A) H :- !, head F H.
+head H H.
+
+% F is H applied to arguments
+% (K4)
+whnf_fix H F N W :- flex H, !, W = app F N.
+% [R-Fix]: the struct argument of the function is at position P
+whnf_fix (fix K Ns Fs Ts) F N W :- !,
+    nth K Ns P, spine F H As, whnf_rec P As (fix K Ns Fs Ts) As F N W.
+% an application whose head is neither an abstraction nor a block is weak head
+% normal
+whnf_fix H F N (app F N).
+
+% [R-Fix]: N is the struct argument when as many arguments precede it as its
+% position says
+whnf_rec 0 [] X As F N W :- !, whnf N C, spine C H Cs, whnf_unfold H X As F C W.
+whnf_rec (s P) (A :: Bs) X As F N W :- !, whnf_rec P Bs X As F N W.
+whnf_rec P Bs X As F N (app F N).
+
+% (K4)
+whnf_unfold H X As F C W :- flex H, !, W = app F C.
+% [R-Fix]: the struct argument is a constructor applied to arguments
+whnf_unfold (con B I J UV) (fix K Ns Fs Ts) As F C W :- !,
+    nth K (Ts (j\ fix j Ns Fs Ts)) T, apps T As R, whnf (app R C) W.
+% a block whose struct argument is not a constructor does not unfold
+whnf_unfold H X As F C (app F C).
+
+% C is H applied to As
+% (K4)
+whnf_cas H As I P C Bs W :- flex H, !, W = cas I P C Bs.
+% [R-Iota]: the arguments after the parameters replace the binders of the
+% branch
+whnf_cas (con B K J UV) As (ind B K UW) P C Bs W :- !,
+    ind_info B K UV N E Ms, split N As Qs Us, nth J Bs Br,
+    whnf_arm Br Us (cas (ind B K UW) P C Bs) W.
+% [R-Iota], where the match keeps parameters
+whnf_cas (con B K J UV) As F P C Bs W :- match_on F B K UW, !,
+    ind_info B K UV N E Ms, split N As Qs Us, nth J Bs Br,
+    whnf_arm Br Us (cas F P C Bs) W.
+% a match whose scrutinee is not a constructor of its family applied to
+% arguments is weak head normal
+whnf_cas H As F P R (Br :: []) W :- match_on F B 0 UV,
+    record_info B Count Eta, record_motive B P,
+    record_branch Count 0 B R Br T, !, whnf T W.
+whnf_cas H As I P C Bs (cas I P C Bs).
+
+% b[zs := us], reduced; M is the match
+% (K4)
+whnf_arm Br Us M W :- flex Br, !, W = M.
+whnf_arm Br [] M W :- !, whnf Br W.
+whnf_arm (abs F) (U :: Us) M W :- whnf_arm (F U) Us M W.
+
+% [R-Delta]
+whnf_cst N UV W :- cst_body N UV T, !, whnf T W.
+% a constant declared by `Axiom` or `Theorem` does not reduce
+whnf_cst N UV (cst N UV).
+
+% ------------------------------------------------------------------------------
+% Conversion
+% ------------------------------------------------------------------------------
+
+% (K4)
+conv M N :- flex M, !, M = N.
+conv M N :- flex N, !, M = N.
+% A cast at the head of a term is passed before the terms are compared in
+% any way, as Rocq compares (its machine passes the cast).
+conv (cast M A) N :- !, conv M N.
+conv M (cast N A) :- !, conv M N.
+% While an elaborator reads (u_recording), two `let`s are compared by their
+% parts before they are unified or reduced (Rocq: the types
+% under cumulativity, one way or the other, the terms by conversion, the
+% bodies as the `let`s were to be compared). The type of the second `let`,
+% which is the expected one where a term is checked against a type, is put
+% below that of the first: of two universes that such types got for
+% themselves (the host's hole for a `let` that writes no type) the first is
+% then settled to the second, as Rocq 9.0.0 leaves the universe of the
+% expected side.
+conv (letin V A F) (letin W B G) :- u_recording, (sub B A; sub A B), conv V W, (pi x\ conv (F x) (G x)), u_choice_possible, !.
+% Try reflexivity first.
+% While an elaborator reads (u_recording), two applications of one constant
+% whose instances unify are compared by those and by their arguments before
+% the constant is unfolded, as Rocq unifies them (first order, before delta,
+% where that makes no two universes one that nothing settles): the cells of
+% the instances become one, and the arguments owe what they owe as they are
+% written, also where the unfolded terms would owe less. A check has no
+% record and uses unification alone.
+conv M N :- u_compare_first M N, !.
+% [Eq-Red]: compare the weak head normal forms
+conv M N :- whnf M M1, whnf N N1, conv_whnf M1 N1.
+
+% (K4)
+conv_whnf M N :- flex M, !, M = N.
+conv_whnf M N :- flex N, !, M = N.
+% compatibility: sorts
+conv_whnf prop prop :- !.
+conv_whnf (typ L) (typ M) :- !, u_equal L M.
+conv_whnf (cst N UV) (cst N UW) :- !, u_equal_all UV UW.
+conv_whnf (ind B I UV) (ind B I UW) :- !, u_equal_all UV UW.
+conv_whnf (con B I J UV) (con B I J UW) :- !, u_equal_all UV UW.
+% compatibility: products
+conv_whnf (prod A1 B1) (prod A2 B2) :- !,
+    conv A1 A2, pi x\ conv (B1 x) (B2 x).
+% compatibility: abstractions. [Eq-Eta] makes the domains irrelevant, and on
+% well-typed terms they agree; they are compared as Rocq compares them.
+conv_whnf (lam A1 F1) (lam A2 F2) :- !,
+    conv A1 A2, pi x\ conv (F1 x) (F2 x).
+% [Eq-Eta]
+conv_whnf (lam A F) N :- !, pi x\ conv (F x) (app N x).
+% [Eq-Eta]
+conv_whnf M (lam A F) :- !, pi x\ conv (app M x) (F x).
+% compatibility: applications whose heads do not reduce
+conv_whnf (proj B J R) (proj B J S) :- !, conv R S.
+% [Eq-Record-Eta] Compare a saturated constructor with a neutral term by
+% its fields. Only demand eta on this boundary, never in normalization.
+conv_whnf (app F X) R :- record_eta (app F X) R, !.
+conv_whnf R (app F X) :- record_eta (app F X) R, !.
+conv_whnf (app M1 N1) (app M2 N2) :- conv_whnf M1 M2, conv N1 N2, !.
+conv_whnf (app M1 N1) (app M2 N2) :- !,
+    template_spines (app M1 N1) (app M2 N2) As Bs, conv_all As Bs.
+% compatibility: a match whose scrutinee does not reduce. The family and the
+% parameters that the match keeps are compared with the rest.
+conv_whnf (cas F1 P1 T1 Bs1) (cas F2 P2 T2 Bs2) :- !,
+    conv_whnf T1 T2, conv F1 F2, conv P1 P2, conv_all Bs1 Bs2.
+% compatibility: the binders of a match
+conv_whnf (abs F1) (abs F2) :- !, pi x\ conv (F1 x) (F2 x).
+% compatibility: blocks of functions
+conv_whnf (fix K Ns Fs1 Ts1) (fix K Ns Fs2 Ts2) :- !,
+    conv_all Fs1 Fs2, pi f\ conv_all (Ts1 f) (Ts2 f).
+% reflexivity: the same variable, family or constructor, or the same constant
+% without a body
+conv_whnf M M.
+
+% compatibility: the terms of two lists, pairwise
+conv_all [] [] :- !.
+conv_all (M :: Ms) (N :: Ns) :- conv M N, conv_all Ms Ns.
+
+% ------------------------------------------------------------------------------
+% Cumulativity
+% ------------------------------------------------------------------------------
+
+% (K4)
+sub A B :- flex A, !, A = B.
+sub A B :- flex B, !, A = B.
+sub (cast A S) B :- !, sub A B.
+sub A (cast B S) :- !, sub A B.
+% While an elaborator reads a declaration that names its universes
+% (u_levels_apart), a sort is below a sort by their levels alone, and a
+% product below a product by its parts: the reflexivity below, which is
+% unification there, does not make two levels one where one of them only
+% has to be below the other. A level cell is settled by an equation or by
+% what is below it, and not by what it is below. A declaration that is
+% checked has no cell and does not assume this.
+sub (typ L) (typ M) :- u_levels_apart, !, lle L M.
+sub (prod A F) (prod B G) :- u_levels_apart, !, conv A B, pi x\ sub (F x) (G x).
+sub (letin V A F) (letin W B G) :- u_recording, (sub B A; sub A B), conv V W, (pi x\ sub (F x) (G x)), u_choice_possible, !.
+% [C-Conv] by reflexivity, tried first
+sub A B :- u_compare_first A B, !.
+% compare the weak head normal forms
+sub A B :- whnf A A1, whnf B B1, sub_whnf A1 B1.
+
+% (K4)
+sub_whnf A B :- flex A, !, A = B.
+sub_whnf A B :- flex B, !, A = B.
+% [C-Sort] with [C-Prop]. Prop is below every Type@{L}: Type@{0} is. The
+% comparison of the levels holds for every level, and it is made so that an
+% elaborator that records its obligations has it for a level cell: Rocq
+% counts a flexible universe that a proposition was put in as one that is
+% above Set when it looks for the least level of that universe.
+sub_whnf prop prop :- !.
+sub_whnf prop (typ L) :- !, lle lz L.
+% [C-Sort] with [C-Type]
+sub_whnf (typ L1) (typ L2) :- !, lle L1 L2.
+% [C-Pi]
+sub_whnf (prod A1 B1) (prod A2 B2) :- !,
+    conv A1 A2, pi x\ sub (B1 x) (B2 x).
+% [C-Conv]
+sub_whnf A B :- conv_whnf A B.
+
+% ------------------------------------------------------------------------------
+% Normal forms, for `Compute`
+% ------------------------------------------------------------------------------
+
+% reduce to weak head normal form, then normalise below the head
+norm M N :- whnf M W, norm_whnf W N.
+
+% (K4)
+norm_whnf W N :- flex W, !, N = W.
+
+norm_whnf (prod A B) N :- !,
+    norm A A1, (pi x\ norm (B x) (B1 x)), N = prod A1 B1.
+norm_whnf (lam A F) N :- !,
+    norm A A1, (pi x\ norm (F x) (F1 x)), N = lam A1 F1.
+norm_whnf (app M1 N1) N :- !,
+    norm_whnf M1 M2, norm N1 N2, N = app M2 N2.
+norm_whnf (proj B J R) N :- !, norm_whnf R S, N = proj B J S.
+norm_whnf (cas F P T Bs) N :- !,
+    norm F F1, norm P P1, norm_whnf T T1, norm_all Bs Bs1,
+    N = cas F1 P1 T1 Bs1.
+norm_whnf (abs F) N :- !, (pi x\ norm (F x) (F1 x)), N = abs F1.
+norm_whnf (fix K Ns Fs Ts) N :- !,
+    norm_all Fs Fs1, (pi f\ norm_all (Ts f) (Ts1 f)), N = fix K Ns Fs1 Ts1.
+norm_whnf W W.
+
+norm_all [] Ns :- !, Ns = [].
+norm_all (M :: Ms) Ns :- norm M N, norm_all Ms Ns1, Ns = N :: Ns1.
+
+% ------------------------------------------------------------------------------
+% Normal forms by beta and iota, for (M-Params)
+% ------------------------------------------------------------------------------
+
+% bi M N: N is the normal form of M by [R-Beta], [R-Iota] and [R-Fix] alone,
+% and under `zeta` by [R-Zeta] too. No constant and no local definition is
+% unfolded, so `whnf` is not used: the parts of a term are normalised first,
+% and then its head.
+% (K4)
+bi M N :- flex M, !, N = M.
+bi (app M A) N :- !, bi M F, bi A B, bi_app F B N.
+bi (proj B J R) N :- !, bi R S, record_bi B J S N.
+bi (cas F P T Bs) N :- !, bi T C, spine C H As, bi_cas H As F P C Bs N.
+bi (prod A B) N :- !, bi A A1, (pi x\ bi (B x) (B1 x)), N = prod A1 B1.
+bi (lam A F) N :- !, bi A A1, (pi x\ bi (F x) (F1 x)), N = lam A1 F1.
+bi (letin T A U) N :- zeta, !, bi (U T) N.
+bi (letin T A U) N :- !,
+    bi T T1, bi A A1, (pi x\ bi (U x) (U1 x)), N = letin T1 A1 U1.
+bi (cast M A) N :- !, bi M N.
+bi (abs F) N :- !, (pi x\ bi (F x) (F1 x)), N = abs F1.
+bi (fix K Ns Fs Ts) N :- !,
+    bi_all Fs Fs1, (pi f\ bi_all (Ts f) (Ts1 f)), N = fix K Ns Fs1 Ts1.
+bi M M.
+
+bi_all [] Ns :- !, Ns = [].
+bi_all (M :: Ms) Ns :- bi M N, bi_all Ms Ns1, Ns = N :: Ns1.
+
+% F applied to B, both normal
+% (K4)
+bi_app F B N :- flex F, !, N = app F B.
+% [R-Beta]
+bi_app (lam A G) B N :- !, bi (G B) N.
+% [R-Fix], when a block of functions is the head of F
+bi_app F B N :- spine F H As, bi_fix H As F B N.
+
+% F is H applied to As
+% (K4)
+bi_fix H As F B N :- flex H, !, N = app F B.
+bi_fix (fix K Ns Fs Ts) As F B N :- !,
+    nth K Ns P, bi_rec P As (fix K Ns Fs Ts) As F B N.
+bi_fix H As F B (app F B).
+
+% [R-Fix]: B is the struct argument when as many arguments precede it as its
+% position says
+bi_rec 0 [] X As F B N :- !, spine B H Cs, bi_unfold H X As F B N.
+bi_rec (s P) (A :: Bs) X As F B N :- !, bi_rec P Bs X As F B N.
+bi_rec P Bs X As F B (app F B).
+
+% (K4)
+bi_unfold H X As F B N :- flex H, !, N = app F B.
+% [R-Fix]: the struct argument is a constructor applied to arguments
+bi_unfold (con I J L UV) (fix K Ns Fs Ts) As F B N :- !,
+    nth K (Ts (j\ fix j Ns Fs Ts)) T, apps T As R, bi (app R B) N.
+bi_unfold H X As F B (app F B).
+
+% C is the normal scrutinee, H applied to As
+% (K4)
+bi_cas H As F P C Bs N :- flex H, !, N = cas F P C Bs.
+% [R-Iota]
+bi_cas (con B K J UV) As F P C Bs N :- match_on F B K UW, !,
+    ind_info B K UV M E Ms, split M As Qs Us, nth J Bs Br, bi_arm Br Us N.
+bi_cas H As F P R (Br :: []) N :- match_on F B 0 UV,
+    record_info B Count Eta, record_motive B P,
+    record_branch Count 0 B R Br T, !, bi T N.
+% a match whose scrutinee is not a constructor of its family
+bi_cas H As F P C Bs N :-
+    bi F F1, bi P P1, bi_all Bs Bs1, N = cas F1 P1 C Bs1.
+
+% b[zs := us], normalised
+bi_arm Br [] N :- !, bi Br N.
+bi_arm (abs G) (U :: Us) N :- bi_arm (G U) Us N.
+
+% ------------------------------------------------------------------------------
+% Elaboration
+% ------------------------------------------------------------------------------
+
+% elab M N: N is M with the return clause of each match in normal form by
+% beta and iota. M has been typed, so its matches have their parameters.
+% (K4)
+elab M N :- flex M, !, N = M.
+elab (app M A) N :- !, elab M M1, elab A A1, N = app M1 A1.
+elab (proj B J R) N :- !, elab R S, N = proj B J S.
+elab (cas F P T Bs) N :- !,
+    bi P P1, elab T T1, elab_all Bs Bs1, N = cas F P1 T1 Bs1.
+elab (prod A B) N :- !, elab A A1, (pi x\ elab (B x) (B1 x)), N = prod A1 B1.
+elab (lam A F) N :- !, elab A A1, (pi x\ elab (F x) (F1 x)), N = lam A1 F1.
+elab (letin T A U) N :- !,
+    elab T T1, elab A A1, (pi x\ elab (U x) (U1 x)), N = letin T1 A1 U1.
+elab (cast M A) N :- !, elab M M1, elab A A1, N = cast M1 A1.
+elab (abs F) N :- !, (pi x\ elab (F x) (F1 x)), N = abs F1.
+elab (fix K Ns Fs Ts) N :- !,
+    elab_all Fs Fs1, (pi f\ elab_all (Ts f) (Ts1 f)), N = fix K Ns Fs1 Ts1.
+elab M M.
+
+elab_all [] Ns :- !, Ns = [].
+elab_all (M :: Ms) Ns :- elab M N, elab_all Ms Ns1, Ns = N :: Ns1.
+
+% ------------------------------------------------------------------------------
+% What the host shows of a term
+% ------------------------------------------------------------------------------
+
+% visible M N: N is M with `untyped` for the type of each `let` whose type is
+% not a proposition. Rocq prints the type of a `let` when that type is in
+% Prop, and finds that out without a check (detyping.ml, Retyping). M is
+% well typed. Nothing is compared, so nothing is recorded of a universe.
+% (K4)
+visible M N :- flex M, !, N = M.
+visible (app M A) N :- !, visible M M1, visible A A1, N = app M1 A1.
+visible (proj B J R) N :- !, visible R S, N = proj B J S.
+visible (prod A B) N :- !,
+    visible A A1, (pi x\ var_type x A => visible (B x) (B1 x)), N = prod A1 B1.
+visible (lam A F) N :- !,
+    visible A A1, (pi x\ var_type x A => visible (F x) (F1 x)), N = lam A1 F1.
+visible (letin T A U) N :- !,
+    visible T T1, visible_type A A1,
+    (pi x\ var_type x A => var_body x T => visible (U x) (U1 x)),
+    N = letin T1 A1 U1.
+visible (cast M A) N :- !, visible M M1, visible A A1, N = cast M1 A1.
+visible (cas F P T Bs) N :- !,
+    spine F (ind B I UV) Ps, ind_type B I UV FT, inst FT Ps AT,
+    visible_return AT F P P1, visible T T1,
+    visible_branches B I UV 0 Ps Bs Bs1, N = cas F P1 T1 Bs1.
+visible (fix K Ns Fs Ts) N :- !,
+    visible_all Fs Fs1,
+    (pi f\ (pi j\ pi a\ (var_type (f j) a :- nth j Fs a)) =>
+        visible_all (Ts f) (Ts1 f)),
+    N = fix K Ns Fs1 Ts1.
+visible M M.
+
+visible_all [] Ns :- !, Ns = [].
+visible_all (M :: Ms) Ns :- visible M N, visible_all Ms Ns1, Ns = N :: Ns1.
+
+visible_type A N :- retype A S, whnf S W, retype_sort W, !, visible A N.
+visible_type A untyped.
+
+% the binders of a return clause: the indices, then the scrutinee
+visible_return A F (abs P) N :- whnf A (prod Y A1), !,
+    (pi y\ var_type y Y => visible_return (A1 y) (app F y) (P y) (P1 y)),
+    N = abs P1.
+visible_return A F (abs P) N :-
+    (pi x\ var_type x F => visible (P x) (P1 x)), N = abs P1.
+
+% the binders of a branch: the arguments of its constructor
+visible_branches B I UV J Ps [] Ns :- !, Ns = [].
+visible_branches B I UV J Ps (Br :: Bs) Ns :-
+    con_type B I J UV CT, inst CT Ps T, visible_branch T Br Br1,
+    visible_branches B I UV (s J) Ps Bs Bs1, Ns = Br1 :: Bs1.
+visible_branch T (abs F) N :- !, whnf T (prod Z T1),
+    (pi z\ var_type z Z => visible_branch (T1 z) (F z) (F1 z)), N = abs F1.
+visible_branch T M N :- visible M N.
+
+% retype M A: A is a type of the well typed term M. No argument is checked
+% against the product that takes it.
+% (K4)
+retype M A :- flex M, !, fail.
+retype prop A :- !, A = typ (ls lz).
+retype (typ L) A :- !, A = typ (ls L).
+retype (cst N UV) A :- !, cst_type N UV A.
+retype (ind B I UV) A :- !, ind_type B I UV A.
+retype (con B I J UV) A :- !, con_type B I J UV A.
+retype (proj B J R) A :- !, retype R T, record_type B J R T A.
+retype (pfield B J UV) A :- !, record_function B J UV A _.
+% the sort of a product is Prop when that of its codomain is
+retype (prod A B) S :- !, pi x\ var_type x A => retype (B x) S.
+retype (lam A F) T :- !, (pi x\ var_type x A => retype (F x) (G x)), T = prod A G.
+retype (letin T A U) R :- !, retype (U T) R.
+retype (cast M A) R :- !, R = A.
+retype (app M N) T :- !, retype M TM, whnf TM (prod A B), template_result (app M N) (B N) T.
+retype (cas F P T Bs) A :- !,
+    spine F (ind B I UV) Ps, ind_info B I UV N E Ms,
+    retype T TT, whnf TT W, spine W G As, split N As Qs Vs, ret_type P Vs T A.
+retype (fix K Ns Fs Ts) A :- !, nth K Fs A.
+retype X A :- var_type X A.
+
+% (K4)
+retype_sort W :- flex W, !, fail.
+retype_sort prop.
+
+% shown M N: N is M as the host shows it. A term that has no `let`, which is
+% nearly every term, is shown as it is, and so is one that `visible` does not
+% answer for (a term of a report need not be well typed).
+shown M N :- has_let M, visible M N, !.
+shown M M.
+shown_all [] Ns :- !, Ns = [].
+shown_all (M :: Ms) Ns :- shown M N, shown_all Ms Ns1, Ns = N :: Ns1.
+% (K4)
+has_let T :- flex T, !, fail.
+has_let (letin V A F) :- !.
+has_let (prod A B) :- !, (has_let A; pi x\ has_let (B x)).
+has_let (lam A B) :- !, (has_let A; pi x\ has_let (B x)).
+has_let (cast M A) :- !, (has_let M; has_let A).
+has_let (proj B J R) :- !, has_let R.
+has_let (app M N) :- !, (has_let M; has_let N).
+has_let (abs B) :- !, pi x\ has_let (B x).
+has_let (cas F P T Bs) :- !, (has_let F; has_let P; has_let T; has_let_any Bs).
+has_let (fix K Ns Fs Ts) :- !, (has_let_any Fs; pi f\ has_let_any (Ts f)).
+has_let_any (T :: Ts) :- has_let T, !.
+has_let_any (T :: Ts) :- has_let_any Ts.
+
+% ------------------------------------------------------------------------------
+% Declarations
+% ------------------------------------------------------------------------------
+
+% [D-Ax]
+admit_ax A :- sort_of "D-Ax" A _.
+% [D-Def] and [D-Thm]
+admit_def A T :- sort_of "D-Def" A _, check T A.
+
+% [D-Ind]. R is the type of the first family: its first N
+% products are the parameters of the block. The constructors are checked with
+% the families assumed at their types.
+admit_ind (block B N Fs) Info :-
+    u_current_block B UV,
+    expect (Fs = family R Ts :: Gs) (rep "D-Ind" []),
+    arities N R Fs Ss,
+    ((pi i\ pi a\ pi ts\ (ind_type B i UV a :- nth i Fs (family a ts))) =>
+        families B N R 0 Fs Ss Info),
+    positive_block (block B N Fs).
+
+% [I-Pos]: the oracle of the host judges the
+% block as a whole. `oracle` is a builtin of Hol. A block that is being
+% elaborated is not judged yet.
+positive_block Blk :- pretyping, !.
+positive_block Blk :-
+    expect (oracle "positive" Blk) (rep "I-Pos" []).
+
+% the sort of each family
+arities N R [] Ss :- !, Ss = [].
+arities N R (family A Ts :: Fs) Ss :-
+    arity N R A S, arities N R Fs Ss1, Ss = S :: Ss1.
+
+% [I-Params]: the type of a family begins with the parameters, as the type R
+% of the first family has them
+arity (s N) (prod P R) A S :- !,
+    expect (A = prod P A1) (rep "I-Params" (A :: [])),
+    sort_of "I-Params" P _,
+    pi p\ var_type p P => arity N (R p) (A1 p) S.
+arity 0 R A S :- !, indices A S.
+arity N R A S :- expect fail (rep "I-Params" (R :: [])).
+
+% [I-Arity]: the indices, then a sort
+indices (prod Y A) S :- !,
+    sort_of "I-Arity" Y _, pi y\ var_type y Y => indices (A y) S.
+indices A S :- is_sort A, !, S = A.
+% what is left is written otherwise: it is typed and reduced
+indices A S :- sort_of "I-Arity" A _, whnf A W, indices_whnf A W S.
+
+% W is the weak head normal form of A
+indices_whnf A (prod Y B) S :- !, indices (prod Y B) S.
+indices_whnf A W S :- expect (is_sort W) (rep "I-Arity" (A :: [])), S = W.
+
+% The constructors of each family, and its info. I is the number of the
+% family and S its sort.
+families B N R I [] [] Info :- !, Info = [].
+families B N R I (family A Ts :: Fs) (S :: Ss) Info :-
+    constructors B N R I S Ts Ms Es,
+    fam_elim S Es E,
+    families B N R (s I) Fs Ss Info1,
+    Info = info N E Ms :: Info1.
+
+% Ms has the marks of each constructor, and Es says of each one whether every
+% argument is a proof
+constructors B N R I S [] Ms Es :- !, Ms = [], Es = [].
+constructors B N R I S (T :: Ts) Ms Es :-
+    con_params N R T [] B I S M E,
+    constructors B N R I S Ts Ms1 Es1,
+    Ms = M :: Ms1, Es = E :: Es1.
+
+% [I-Con]: the type of a constructor begins with the parameters. Qs are the
+% parameters bound so far, the last one first.
+con_params (s N) (prod P R) T Qs B I S M E :- !,
+    expect (T = prod P T1) (rep "I-Con" (T :: [])),
+    pi p\ var_type p P => con_params N (R p) (T1 p) (p :: Qs) B I S M E.
+con_params 0 R T Qs B I S M E :- rev Qs [] Ps, con_args T B I Ps S M E.
+
+% an argument (z : Z): [I-Con], [I-Univ] and [I-Pos]. M has a mark for each
+% argument, and E is elim_all when every argument is a proof.
+con_args (prod Z T) B I Ps S M E :- !,
+    sort_of "I-Con" Z SZ,
+    expect (in_univ SZ S) (rep "I-Univ" (Z :: SZ :: S :: [])),
+    argument B Z R,
+    (pi z\ var_type z Z => con_args (T z) B I Ps S M1 E1),
+    M = R :: M1, proofs SZ E1 E.
+% what is left is not written as a product: it is typed and reduced
+con_args C B I Ps S M E :-
+    sort_of "I-Con" C _, whnf C W, con_whnf W B I Ps S M E.
+
+% an argument that reduction brings out
+con_whnf (prod Z T) B I Ps S M E :- !, con_args (prod Z T) B I Ps S M E.
+% the conclusion `I ps us`: [I-Con], [I-Uniform] and [I-Index]
+con_whnf C B I Ps S M E :-
+    spine C H As,
+    u_current_block B UV,
+    expect (H = ind B I UW, u_equal_all UV UW) (rep "I-Con" (C :: [])),
+    expect (uniform Ps As Us) (rep "I-Uniform" (C :: [])),
+    expect (no_family B Us) (rep "I-Index" (C :: [])),
+    M = [], E = elim_all.
+
+% [I-Uniform]: the first arguments of the conclusion are the parameters, as
+% they are written or in weak head normal form; Us are the other arguments
+uniform [] As As :- !.
+uniform (P :: Ps) (P :: As) Us :- !, uniform Ps As Us.
+uniform (P :: Ps) (A :: As) Us :- whnf A W, W = P, uniform Ps As Us.
+
+% [I-Univ]: the sort SZ of an argument type against the sort of the family.
+% An argument type that is a proposition asks nothing of the level of the
+% family: Rocq finds the least level of an inductive type from the levels
+% of its arguments, and a proposition has none.
+in_univ SZ prop :- !.
+in_univ prop (typ L) :- !.
+in_univ SZ S :- sub_whnf SZ S.
+
+% [I-Elim-Sub] asks that every argument have a type of sort Prop
+proofs prop E E :- !.
+proofs S E elim_prop.
+
+% The kernel records the recursive marks; strict positivity is judged once
+% for the whole block by positive_block and its host oracle.
+argument B Z R :- marked B Z R.
+
+% the mark of an argument: its type, reduced as [I-Pos] reduces it, ends in a
+% family of the block or in something else
+marked B Z R :- whnf Z W, marked_whnf B W R.
+
+marked_whnf B (prod A T) R :- !, pi w\ marked B (T w) R.
+marked_whnf B C R :- head C H, marked_head H B R.
+
+marked_head (ind B K UV) B R :- !, R = rec.
+marked_head H B nonrec.
+
+% no family of block B occurs in the terms
+no_family B Ts :- (pi i\ pi uv\ in_block (ind B i uv)) => outside_all Ts.
+
+% Elim(I), from the sort of the family and what `proofs` says
+% of each of its constructors
+% [I-Elim-Type]
+fam_elim (typ L) Es E :- !, E = elim_all.
+% [I-Elim-Sub]: no constructor, or one whose arguments are proofs
+fam_elim prop [] E :- !, E = elim_all.
+fam_elim prop (elim_all :: []) E :- !, E = elim_all.
+% [I-Elim-Prop]
+fam_elim prop Es elim_prop.
+
+% Declaration-local universes. Templates contain lp, never live Hol variables.
+kind uconstraint type.
+type uc_le (lvl -> lvl -> uconstraint).
+type uc_eq (lvl -> lvl -> uconstraint).
+type u_context (list uconstraint -> o).
+type u_parameters (list lvl -> o).
+type u_inference_parameters (list lvl -> o).
+type u_inference_context (list uconstraint -> o).
+type u_guard_candidate (tm -> o).
+type u_block_instance (nat -> list lvl -> o).
+type u_current_block (nat -> list lvl -> o).
+type u_closed (lvl -> o).
+type u_level (lvl -> o).
+type u_closed_le (lvl -> lvl -> o).
+type u_closed_max (lvl -> lvl -> lvl -> o).
+type u_successor (lvl -> lvl -> o).
+type u_inequality (lvl -> lvl -> o).
+type u_equal (lvl -> lvl -> o).
+type u_equal_all (list lvl -> list lvl -> o).
+type u_value (lvl -> (nat -> o) -> o).
+type u_value_max (nat -> nat -> (nat -> o) -> o).
+type u_assume (list uconstraint -> o -> o).
+type u_assume_one (uconstraint -> o -> o).
+type u_check_constraints (list uconstraint -> o).
+type u_instance (nat -> list uconstraint -> list lvl -> o).
+type u_instance_size (nat -> list lvl -> o).
+type u_sublevel (list lvl -> lvl -> lvl -> o).
+type u_sublevels (list lvl -> list lvl -> list lvl -> o).
+type u_subconstraint (list lvl -> uconstraint -> uconstraint -> o).
+type u_subconstraints (list lvl -> list uconstraint -> list uconstraint -> o).
+type u_term (list lvl -> tm -> tm -> o).
+type u_terms (list lvl -> list tm -> list tm -> o).
+type u_local (tm -> o).
+type u_families (list lvl -> list family -> list family -> o).
+type u_universal (nat -> list uconstraint -> (list lvl -> o) -> o).
+type u_universal_bind (nat -> list lvl -> list uconstraint -> (list lvl -> o) -> o).
+type u_admit_ax (nat -> list uconstraint -> tm -> o).
+type u_admit_def (nat -> list uconstraint -> tm -> tm -> o).
+type u_admit_ind (nat -> list uconstraint -> block -> list info -> o).
+
+u_current_block B UV :- u_block_instance B UV, !.
+u_current_block B [].
+u_closed lz.
+u_closed (ls L) :- u_closed L.
+u_level L :- flex L, !, fail.
+u_level lz.
+u_level (ls L) :- u_closed L.
+u_level (lu L) :- u_level L.
+u_level (lm L M) :- u_level L, u_level M.
+u_level (lv N).
+u_level (lg B I) :- u_global_known (lg B I).
+u_closed_le lz L :- !.
+u_closed_le (ls L) (ls M) :- u_closed_le L M.
+u_closed_max lz M M :- !.
+u_closed_max L lz L :- !.
+u_closed_max (ls L) (ls M) (ls N) :- u_closed_max L M N.
+u_successor L (ls L) :- u_closed L, !.
+u_successor L (lu L).
+u_inequality L M :- L == M, !.
+u_inequality L M :- u_closed L, u_closed M, !, u_closed_le L M.
+% While an elaborator records its obligations, what is asked of a level cell
+% that it has not settled is recorded also when every level satisfies it:
+% the elaborator reads the least level of the cell from what is below it.
+% A declaration that is checked has no such cell, and this clause is not
+% used.
+u_inequality L M :- u_recording, u_open_cell M, !, u_record (uc_le L M).
+u_inequality L M :- u_lattice_le L M, !.
+u_inequality L M :- u_recording, !, u_record (uc_le L M).
+u_inequality L M :- u_global_pair L M (u_value L (A\ u_value M (B\ u_nat_le A B))).
+% Keep the creation slot of the surviving universe before unification
+% identifies two flexible slots. The elaborator enables this only when the
+% header has no named universe arguments. Marks are trailed by Hol.
+type u_origins (nat -> list lvl -> list lvl -> o).
+type u_track_alias o.
+type u_joinable (tm -> tm -> o).
+type u_compare_first (tm -> tm -> o).
+type u_recorded_compare (tm -> tm -> o).
+type u_recorded_reflexive (tm -> tm -> o).
+type u_same_head (tm -> tm -> o).
+% With no recording, unification is the kernel's reflexivity rule. During
+% inference a unification can identify two cells in an earlier obligation.
+% Only commit a new identification if the obligations still have a model.
+u_compare_first M N :- u_recording, !, u_recorded_compare M N.
+u_compare_first M M.
+u_recorded_compare M N :- M == N, !.
+% The private bounding cells of two saturated template occurrences need
+% no equation. Compare their actual arguments before reflexive unification.
+u_recorded_compare (app F X) (app G Y) :- template_active,
+    template_spines (app F X) (app G Y) As Bs, !, conv_all As Bs.
+u_recorded_compare M N :- u_recorded_reflexive M N, u_choice_possible, !.
+u_recorded_compare M N :- u_same_head M N, u_choice_possible.
+u_recorded_reflexive M N :- u_track_alias, u_joinable M N, !, conv_whnf M N.
+u_recorded_reflexive M M.
+u_same_head M N :- spine M (cst C UV) As, spine N (cst C UW) Bs, u_joinable (cst C UV) (cst C UW),
+    u_equal_all UV UW, conv_all As Bs.
+type u_unjoinable (tm -> tm -> o).
+u_unjoinable M M :- !, fail.
+u_unjoinable M N.
+u_joinable M N :- u_unjoinable M N, !, fail.
+u_joinable M N.
+type u_origin_mark (nat -> list lvl -> list lvl -> lvl -> o).
+type u_keep_origin (nat -> nat -> o).
+u_track_alias :- u_levels_apart, u_origins 0 Cells Marks.
+u_origin_mark X Cells Marks Mark :- flex Cells, !, fail.
+u_origin_mark X (lv Y :: Cs) (Mark :: Ms) Mark :- X == Y, flex Mark, !.
+u_origin_mark X (L :: Cs) (M :: Ms) Mark :- u_origin_mark X Cs Ms Mark.
+u_keep_origin X Y :- u_origins 0 Cells Marks, u_origin_mark X Cells Marks Lost, u_origin_mark Y Cells Marks Kept, !, Lost = lz.
+u_keep_origin X Y.
+u_equal L M :- L == M, !.
+u_equal (lv X) (lv Y) :- u_track_alias, flex X, flex Y, !, u_keep_origin X Y, lv X = lv Y.
+u_equal (lv X) (lv Y) :- u_track_alias, (flex X; flex Y), !, lv X = lv Y.
+u_equal L M :- u_closed L, u_closed M, !, L = M.
+u_equal L M :- u_lattice_le L M, u_lattice_le M L, !.
+u_equal L M :- u_recording, !, u_record (uc_eq L M).
+u_equal L M :- u_global_pair L M (u_value L (A\ u_value M (B\ u_nat_eq A B))).
+u_equal_all [] [].
+u_equal_all (L :: Ls) (M :: Ms) :- u_equal L M, u_equal_all Ls Ms.
+% Positive certificates from the natural-number join/successor laws only.
+% A failed certificate falls back to Presburger; no level cell is assigned.
+type u_lattice_le (lvl -> lvl -> o).
+type u_open_cell (lvl -> o).
+type u_levels_apart o.
+u_open_cell M :- flex M, !, fail.
+u_open_cell (lv N) :- flex N.
+u_lattice_le L M :- flex L, !, fail.
+u_lattice_le L M :- flex M, !, fail.
+u_lattice_le L M :- L == M, !.
+u_lattice_le lz M :- u_level M, !.
+u_lattice_le (lm A B) M :- !, u_lattice_le A M, u_lattice_le B M.
+u_lattice_le L (lm A B) :- u_lattice_le L A, !.
+u_lattice_le L (lm A B) :- u_lattice_le L B.
+u_lattice_le (ls A) (ls B) :- u_lattice_le A B.
+u_lattice_le (lu A) (lu B) :- u_lattice_le A B.
+u_lattice_le (ls A) (lu B) :- u_lattice_le A B.
+u_lattice_le (lu A) (ls B) :- u_lattice_le A B.
+u_value lz K :- K 0.
+u_value (ls L) K :- u_value L (N\ K (s N)).
+u_value (lu L) K :- u_value L (N\ K (s N)).
+u_value (lv N) K :- K N.
+u_value (lg B I) K :- u_global_value B I X, !, K X.
+u_value (lm L M) K :- u_value L (A\ u_value M (B\ u_value_max A B K)).
+% The maximum's graph is total and functional. A pi-bound result tests every
+% value satisfying that graph; it does not pick one convenient upper bound.
+u_value_max A B K :- pi C\
+    (presburger "A =< C /\\ B =< C /\\ (C = A \\/ C = B)" => K C).
+u_assume [] G :- G.
+u_assume (C :: Cs) G :- u_assume_one C (u_assume Cs G).
+u_assume_one (uc_le L M) G :-
+    u_value L (A\ u_value M (B\ u_nat_assume_le A B G)).
+u_assume_one (uc_eq L M) G :-
+    u_value L (A\ u_value M (B\ u_nat_assume_eq A B G)).
+u_check_constraints [].
+u_check_constraints (uc_le L M :: Cs) :- u_inequality L M, u_check_constraints Cs.
+u_check_constraints (uc_eq L M :: Cs) :- u_equal L M, u_check_constraints Cs.
+u_instance Count Cs UV :-
+    u_instance_size Count UV, u_subconstraints UV Cs Actual, u_check_constraints Actual.
+u_instance_size 0 [] :- !.
+u_instance_size (s N) (L :: Ls) :- u_level L, u_instance_size N Ls.
+u_sublevel UV lz lz.
+u_sublevel UV (lg B I) (lg B I) :- u_global_known (lg B I).
+u_sublevel UV (ls L) (ls M) :- u_sublevel UV L M.
+u_sublevel UV (lp N) L :- nth N UV L.
+u_sublevel UV (lu L) (lu M) :- u_sublevel UV L M.
+u_sublevel UV (lm L M) (lm A B) :- u_sublevel UV L A, u_sublevel UV M B.
+u_sublevels UV [] [].
+u_sublevels UV (L :: Ls) (M :: Ms) :- u_sublevel UV L M, u_sublevels UV Ls Ms.
+u_subconstraint UV (uc_le L M) (uc_le A B) :- u_sublevel UV L A, u_sublevel UV M B.
+u_subconstraint UV (uc_eq L M) (uc_eq A B) :- u_sublevel UV L A, u_sublevel UV M B.
+u_subconstraints UV [] [].
+u_subconstraints UV (C :: Cs) (D :: Ds) :- u_subconstraint UV C D, u_subconstraints UV Cs Ds.
+u_term UV T M :- flex T, !, fail.
+u_term UV prop prop.
+u_term UV (typ L) (typ M) :- u_sublevel UV L M.
+u_term UV (cst C Ls) (cst C Ms) :- u_sublevels UV Ls Ms.
+u_term UV (ind B I Ls) (ind B I Ms) :- u_sublevels UV Ls Ms.
+u_term UV (con B I J Ls) (con B I J Ms) :- u_sublevels UV Ls Ms.
+u_term UV (pfield B J Ls) (pfield B J Ms) :- u_sublevels UV Ls Ms.
+u_term UV (proj B J R) (proj B J S) :- u_term UV R S.
+u_term UV (prod A B) (prod C D) :- u_term UV A C, pi x\ u_local x => u_term UV (B x) (D x).
+u_term UV (lam A B) (lam C D) :- u_term UV A C, pi x\ u_local x => u_term UV (B x) (D x).
+u_term UV (letin T A B) (letin S C D) :- u_term UV T S, u_term UV A C, pi x\ u_local x => u_term UV (B x) (D x).
+u_term UV (cast M A) (cast N B) :- u_term UV M N, u_term UV A B.
+u_term UV (app F A) (app G B) :- u_term UV F G, u_term UV A B.
+u_term UV (abs B) (abs D) :- pi x\ u_local x => u_term UV (B x) (D x).
+u_term UV (cas F P T Bs) (cas G Q S Cs) :- u_term UV F G, u_term UV P Q, u_term UV T S, u_terms UV Bs Cs.
+u_term UV (fix K Ns Fs Ts) (fix K Ns Gs Us) :- u_terms UV Fs Gs, pi f\ (pi i\ u_local (f i)) => u_terms UV (Ts f) (Us f).
+u_term UV X X :- u_local X, !.
+u_term UV X X :- var_type X A, !.
+u_term UV X X :- var_body X V.
+u_terms UV [] [].
+u_terms UV (T :: Ts) (S :: Ss) :- u_term UV T S, u_terms UV Ts Ss.
+u_families UV [] [].
+u_families UV (family A Ts :: Fs) (family B Us :: Gs) :- u_term UV A B, u_terms UV Ts Us, u_families UV Fs Gs.
+% A template declaration owns one shared default per universe. Only a newly
+% admitted declaration can publish a segment. Quantify each owner once, and
+% check the collected constraints together, also when importing an object.
+type u_global_segment (nat -> list lvl -> list uconstraint -> o).
+% The host supplies the admitted declaration's scheme. Its local levels
+% become shared defaults only for a template. A universe-polymorphic
+% client's assumptions hold at instantiation and cannot fix those defaults.
+type u_template_segment (nat -> nat -> list uconstraint -> o).
+type u_client_segment (nat -> nat -> list uconstraint -> o).
+type u_default_levels ((nat -> lvl) -> nat -> nat -> list lvl -> list uconstraint -> list uconstraint -> o).
+type u_global_edges (list uconstraint -> list uconstraint -> o).
+u_global_segment B Slots Cs :- u_template_segment B K Scheme,
+    u_default_levels (lg B) 0 K Slots Cs Tail, u_subconstraints Slots Scheme Tail.
+u_global_segment B [] Cs :- u_client_segment B 0 Scheme, u_global_edges Scheme Cs, Cs = C :: More.
+u_default_levels At I 0 [] Tail Tail :- !.
+u_default_levels At I (s N) (At I :: Us) (uc_le (ls lz) (At I) :: Cs) Tail :-
+    u_default_levels At (s I) N Us Cs Tail.
+u_global_edges [] [].
+u_global_edges (C :: Cs) (C :: Ds) :- u_global_constraints [C], !, u_global_edges Cs Ds.
+u_global_edges (C :: Cs) Ds :- u_global_edges Cs Ds.
+type u_global_value (nat -> nat -> nat -> o).
+type u_global_known (lvl -> o).
+% The host supplies an index of the active, already admitted segments.
+% Standalone kernel queries can enumerate their own hypothetical facts.
+type u_global_ids (list nat -> o).
+type u_global_graph (list lvl -> list uconstraint -> list uconstraint -> o).
+type u_global_index (list nat -> list lvl -> list uconstraint -> list uconstraint -> o).
+type u_global_level (lvl -> o).
+type u_global_pair (lvl -> lvl -> o -> o).
+type u_global_constraints (list uconstraint -> o).
+u_global_level L :- flex L, !, fail.
+u_global_level (lg B I).
+u_global_level (ls L) :- u_global_level L.
+u_global_level (lu L) :- u_global_level L.
+u_global_level (lm L R) :- u_global_level L ; u_global_level R.
+u_global_pair L M G :- (u_global_level L ; u_global_level M), !, u_global_judge G.
+u_global_pair L M G :- G.
+u_global_constraints (uc_eq L M :: Cs) :- (u_global_level L ; u_global_level M), !.
+u_global_constraints (uc_le L M :: Cs) :- (u_global_level L ; u_global_level M), !.
+u_global_constraints (C :: Cs) :- u_global_constraints Cs.
+u_global_graph Slots Cs Tail :- u_global_ids Keys, !, u_global_index Keys Slots Cs Tail.
+u_global_graph Slots Cs Tail :- u_global_collect [] Slots Cs [] Tail.
+u_global_index [] [] Tail Tail.
+u_global_index (K :: Ks) Slots Cs Tail :- u_global_before Limit, K >= Limit, !, u_global_index Ks Slots Cs Tail.
+u_global_index (K :: Ks) Slots Cs Tail :- u_global_segment K More Edges,
+    u_global_append More After Slots, u_global_append Edges Rest Cs, u_global_index Ks After Rest Tail.
+
+type u_global_bound o.
+type u_global_judge (o -> o).
+type u_global_fresh (o -> o).
+type u_global_collect (list nat -> list lvl -> list uconstraint -> list lvl -> list uconstraint -> o).
+type u_global_bind (list lvl -> list uconstraint -> o -> o).
+type u_global_member (A -> list A -> o).
+type u_global_new (nat -> list nat -> o).
+type u_global_before (nat -> o).
+type u_global_append (list A -> list A -> list A -> o).
+u_global_member X (X :: Xs) :- !.
+u_global_member X (Y :: Xs) :- u_global_member X Xs.
+u_global_new K Seen :- u_global_before Limit, K >= Limit, !, fail.
+u_global_new K Seen :- u_global_member K Seen, !, fail.
+u_global_new K Seen.
+u_global_known (lg B I) :- u_global_segment B Slots Cs, u_global_member (lg B I) Slots.
+u_global_append [] Tail Tail.
+u_global_append (X :: Xs) Tail (X :: Ys) :- u_global_append Xs Tail Ys.
+u_global_collect Seen Slots Cs Tail Rest :-
+    u_global_segment K More Edges, u_global_new K Seen, !,
+    u_global_append More Next Slots, u_global_append Edges After Cs,
+    u_global_collect (K :: Seen) Next After Tail Rest.
+u_global_collect Seen Tail Rest Tail Rest.
+u_global_judge G :- u_global_bound, !, G.
+u_global_judge G :- u_global_fresh G.
+u_global_fresh G :- u_global_graph Slots Cs [], u_global_bind Slots Cs G.
+u_global_bind [] Cs G :- u_global_bound => u_assume Cs G.
+u_global_bind (lg B I :: Slots) Cs G :- pi x\ u_global_value B I x => u_global_bind Slots Cs G.
+
+u_universal Count Cs G :- u_global_constraints Cs, !, u_global_judge (u_universal_bind Count [] Cs G).
+u_universal Count Cs G :- u_universal_bind Count [] Cs G.
+u_universal_bind 0 Reverse Cs G :- rev Reverse [] UV, u_subconstraints UV Cs Actual,
+    (u_parameters UV => u_context Actual => u_assume Actual (G UV)).
+u_universal_bind (s N) Reverse Cs G :- pi n\ u_universal_bind N (lv n :: Reverse) Cs G.
+u_admit_ax Count Cs T :- u_universal Count Cs (UV\ sigma A\ u_term UV T A, admit_ax A).
+u_admit_def Count Cs T V :- u_universal Count Cs (UV\ sigma A\ sigma M\ u_term UV T A, u_term UV V M, admit_def A M).
+u_admit_ind Count Cs (block B N Fs) Info :- u_universal Count Cs
+    (UV\ sigma Gs\ u_families UV Fs Gs, (u_block_instance B UV => admit_ind (block B N Gs) Info)).
+
+% Closed Presburger syntax for the independent satisfiability run. The host
+% decodes this syntax; it neither chooses levels nor proves an inequality.
+kind uformula type.
+type uf_true uformula.
+type uf_le (lvl -> lvl -> uformula).
+type uf_eq (lvl -> lvl -> uformula).
+type uf_and (uformula -> uformula -> uformula).
+type uf_or (uformula -> uformula -> uformula).
+type uf_exists ((nat -> uformula) -> uformula).
+type u_satisfiable (nat -> list uconstraint -> uformula -> o).
+type u_sat_bind (nat -> list lvl -> list uconstraint -> uformula -> o).
+type u_formula (list uconstraint -> uformula -> o).
+type u_formula_one (uconstraint -> uformula -> o).
+type u_formula_value (lvl -> (lvl -> uformula -> o) -> uformula -> o).
+type u_formula_le (lvl -> lvl -> uformula -> o).
+type u_formula_eq (lvl -> lvl -> uformula -> o).
+type u_formula_max (lvl -> lvl -> (lvl -> uformula -> o) -> uformula -> o).
+u_satisfiable Count Cs F :- u_global_graph Slots Acc Cs, u_global_formula Slots Count Acc F.
+type u_global_formula (list lvl -> nat -> list uconstraint -> uformula -> o).
+u_global_formula [] Count Cs F :- u_sat_bind Count [] Cs F.
+u_global_formula (lg B I :: More) Count Cs (uf_exists F) :- pi x\
+    u_global_value B I x => u_global_formula More Count Cs (F x).
+u_sat_bind 0 Reverse Cs F :- rev Reverse [] UV,
+    expect (u_subconstraints UV Cs Actual) (rep "U-Context" []), u_formula Actual F.
+u_sat_bind (s N) Reverse Cs (uf_exists F) :- pi n\ u_sat_bind N (lv n :: Reverse) Cs (F n).
+u_formula [] uf_true.
+u_formula (C :: Cs) (uf_and F G) :- u_formula_one C F, u_formula Cs G.
+u_formula_one (uc_le L M) F :- u_formula_value L (A\ R\ u_formula_value M (B\ S\ u_formula_le A B S) R) F.
+u_formula_one (uc_eq L M) F :- u_formula_value L (A\ R\ u_formula_value M (B\ S\ u_formula_eq A B S) R) F.
+u_formula_le A B (uf_le A B).
+u_formula_eq A B (uf_eq A B).
+u_formula_value lz K F :- K lz F.
+u_formula_value (ls L) K F :- u_formula_value L (N\ R\ K (lu N) R) F.
+u_formula_value (lu L) K F :- u_formula_value L (N\ R\ K (lu N) R) F.
+u_formula_value (lv N) K F :- K (lv N) F.
+u_formula_value (lg B I) K F :- u_global_value B I X, !, K (lv X) F.
+u_formula_value (lm L M) K F :-
+    u_formula_value L (A\ R\ u_formula_value M (B\ S\ u_formula_max A B K S) R) F.
+u_formula_max A B K (uf_exists (C\ uf_and (uf_and (uf_le A (lv C)) (uf_le B (lv C)))
+    (uf_and (uf_or (uf_eq (lv C) A) (uf_eq (lv C) B)) (Next C)))) :-
+    pi C\ K (lv C) (Next C).
+
+% A rollback-safe collector. Consecutive complete chunks have capacities
+% 1,2,4,...; insertion visits logarithmic paths, flattening visits each node.
+% No host callback stores constraints outside Hol's logical trail.
+kind ufull type.
+kind utree type.
+kind uqueue type.
+type u_full ufull.
+type u_leaf (uconstraint -> utree).
+type u_branch (utree -> ufull -> utree -> ufull -> utree).
+type u_chunk (nat -> utree -> ufull -> uqueue -> uqueue).
+type u_recording o.
+% Before a structural comparison commits, the elaborator checks whether the
+% accumulated universe obligations still have a model. Failing it restores
+% the speculative bindings and obligations through ordinary Hol backtracking.
+type u_choice_possible o.
+type u_stream (uqueue -> o).
+type u_record (uconstraint -> o).
+type u_full_test (ufull -> o).
+type u_push (uqueue -> uconstraint -> o).
+type u_push_tree (nat -> utree -> ufull -> uconstraint -> o).
+type u_mark_full (ufull -> ufull -> ufull -> o).
+type u_flat (uqueue -> list uconstraint -> list uconstraint -> o).
+type u_flat_tree (utree -> list uconstraint -> list uconstraint -> o).
+u_full_test X :- flex X, !, fail.
+u_full_test u_full.
+u_record C :- u_stream Q, u_push Q C.
+u_push (u_chunk N T F Rest) C :- u_full_test F, !,
+    (flex Rest, !, Rest = u_chunk (s N) Next Full Tail; true), u_push Rest C.
+u_push (u_chunk N T F Rest) C :- u_push_tree N T F C.
+u_push_tree 0 T F C :- T = u_leaf C, F = u_full.
+u_push_tree (s N) (u_branch A AF B BF) Full C :- u_full_test AF, !,
+    u_push_tree N B BF C, u_mark_full AF BF Full.
+u_push_tree (s N) (u_branch A AF B BF) Full C :-
+    u_push_tree N A AF C, u_mark_full AF BF Full.
+u_mark_full A B F :- u_full_test A, u_full_test B, !, F = u_full.
+u_mark_full A B F.
+u_flat Q Cs Tail :- flex Q, !, Cs = Tail.
+u_flat (u_chunk N T F Rest) Cs Tail :- u_flat_tree T Cs More, u_flat Rest More Tail.
+u_flat_tree T Cs Tail :- flex T, !, Cs = Tail.
+u_flat_tree (u_leaf C) (C :: Cs) Cs.
+u_flat_tree (u_branch A AF B BF) Cs Tail :- u_flat_tree A Cs More, u_flat_tree B More Tail.
+
+type u_nat_le (nat -> nat -> o).
+type u_nat_eq (nat -> nat -> o).
+type u_nat_assume_le (nat -> nat -> o -> o).
+type u_nat_assume_eq (nat -> nat -> o -> o).
+u_nat_le A B :- presburger "A =< B".
+u_nat_eq A B :- presburger "A = B".
+u_nat_assume_le A B G :- (presburger "A =< B" => G).
+u_nat_assume_eq A B G :- (presburger "A = B" => G).
+
+% Structural traversal shared by freshening and universe reification.
+type u_map_level (lvl -> S -> S -> lvl -> o).
+type u_map_term ((lvl -> S -> S -> lvl -> o) -> S -> S -> tm -> tm -> o).
+type u_map_terms ((lvl -> S -> S -> lvl -> o) -> S -> S -> list tm -> list tm -> o).
+type u_map_levels ((lvl -> S -> S -> lvl -> o) -> S -> S -> list lvl -> list lvl -> o).
+u_map_levels F S S [] [].
+u_map_levels F S U (L :: Ls) (M :: Ms) :- F L S T M, u_map_levels F T U Ls Ms.
+u_map_term F S U T M :- flex T, !, fail.
+u_map_term F S S prop prop :- !.
+u_map_term F S S untyped untyped :- !.
+u_map_term F S U (typ L) (typ M) :- !, F L S U M.
+u_map_term F S U (cst C Ls) (cst C Ms) :- !, u_map_levels F S U Ls Ms.
+u_map_term F S U (ind B I Ls) (ind B I Ms) :- !, u_map_levels F S U Ls Ms.
+u_map_term F S U (pfield B J Ls) (pfield B J Ms) :- !, u_map_levels F S U Ls Ms.
+u_map_term F S U (proj B J R) (proj B J T) :- !, u_map_term F S U R T.
+u_map_term F S U (con B I J Ls) (con B I J Ms) :- !, u_map_levels F S U Ls Ms.
+u_map_term F S U (prod A B) (prod C D) :- !, u_map_term F S T A C, pi x\ u_local x => u_map_term F T U (B x) (D x).
+u_map_term F S U (lam A B) (lam C D) :- !, u_map_term F S T A C, pi x\ u_local x => u_map_term F T U (B x) (D x).
+u_map_term F S U (letin V A B) (letin W C D) :- !, u_map_term F S T V W, u_map_term F T R A C, pi x\ u_local x => u_map_term F R U (B x) (D x).
+u_map_term F S U (cast M A) (cast N B) :- !, u_map_term F S T M N, u_map_term F T U A B.
+u_map_term F S U (app A B) (app C D) :- !, u_map_term F S T A C, u_map_term F T U B D.
+u_map_term F S U (abs A) (abs B) :- !, pi x\ u_local x => u_map_term F S U (A x) (B x).
+u_map_term F S U (cas A B C Ds) (cas E G H Is) :- !,
+    u_map_term F S T A E, u_map_term F T V B G, u_map_term F V W C H, u_map_terms F W U Ds Is.
+u_map_term F S U (fix K Ns As Bs) (fix K Ns Cs Ds) :- !,
+    u_map_terms F S T As Cs, pi f\ (pi i\ u_local (f i)) => u_map_terms F T U (Bs f) (Ds f).
+u_map_term F S S X X :- u_local X, !.
+u_map_term F S S X X :- var_type X A, !.
+u_map_term F S S X X :- var_body X V.
+u_map_terms F S S [] [].
+u_map_terms F S U (A :: As) (B :: Bs) :- u_map_term F S T A B, u_map_terms F T U As Bs.
+
+% The inverse is defined only on the universally introduced parameters.
+% It cannot generalize an ordinary hole or an unknown runtime level cell.
+type u_abstract_level (list lvl -> lvl -> A -> A -> lvl -> o).
+type u_parameter_index (nat -> list lvl -> nat -> nat -> o).
+type u_abstract (list lvl -> tm -> tm -> o).
+type u_infer (nat -> list uconstraint -> tm -> tm -> o).
+type u_argument_signature (nat -> list uconstraint -> tm -> tm -> o).
+type u_normal (nat -> list uconstraint -> tm -> tm -> o).
+type u_shown (nat -> list uconstraint -> tm -> tm -> o).
+type u_visible (nat -> list uconstraint -> tm -> tm -> o).
+u_parameter_index N (lv M :: Rest) I I :- N == M, !.
+u_parameter_index N (L :: Rest) I J :- u_parameter_index N Rest (s I) J.
+u_abstract_level UV lz S S lz.
+u_abstract_level UV (lg B I) S S (lg B I).
+u_abstract_level UV (ls L) S S (ls M) :- u_abstract_level UV L S S M.
+u_abstract_level UV (lu L) S S (lu M) :- u_abstract_level UV L S S M.
+u_abstract_level UV (lm L M) S S (lm A B) :- u_abstract_level UV L S S A, u_abstract_level UV M S S B.
+u_abstract_level UV (lv N) S S (lp I) :- u_parameter_index N UV 0 I.
+u_abstract UV T M :- u_map_term (u_abstract_level UV) 0 0 T M.
+u_infer Count Cs T A :- u_universal Count Cs
+    (UV\ sigma M\ sigma S\ u_term UV T M, infer M S, u_abstract UV S A).
+% Arguments asks for the telescope of an admitted declaration. Its parameter
+% count is independent of the defaults chosen when a reference is used.
+u_argument_signature Count Cs T A :- u_universal Count Cs
+    (UV\ sigma M\ sigma S\ sigma R\ u_term UV T M, application_head M S, norm S R, u_abstract UV R A).
+u_normal Count Cs T N :- u_universal Count Cs
+    (UV\ sigma M\ sigma S\ sigma R\ u_term UV T M, infer M S, norm M R, u_abstract UV R N).
+% the type of T as `Check` shows it: in normal form by beta and iota, and so
+% without a cast (Rocq: nf_betaiota)
+u_shown Count Cs T A :- u_universal Count Cs
+    (UV\ sigma M\ sigma S\ sigma R\ u_term UV T M, infer M S, bi S R, u_abstract UV R A).
+% T as the host shows it (visible)
+u_visible Count Cs T N :- u_universal Count Cs
+    (UV\ sigma M\ sigma R\ u_term UV T M, visible M R, u_abstract UV R N).
+
+type u_oracle_answer (nat -> list uconstraint -> oracle_request -> tm -> o).
+u_oracle_answer Count Cs (oracle_head T) N :- u_universal Count Cs
+    (UV\ sigma M\ sigma R\ u_term UV T M, oracle_answer (oracle_head M) R, u_abstract UV R N).
+u_oracle_answer Count Cs (oracle_halt T) N :- u_universal Count Cs
+    (UV\ sigma M\ sigma R\ u_term UV T M, oracle_answer (oracle_halt M) R, u_abstract UV R N).
+
+% Finite Rocq universe graph certificates. The host first checks Context's
+% consistency through u_satisfiable, then requests this independent universal
+% judgment. Coordinates in the returned constraints index the supplied list;
+% they are not the declaration's original universe parameters. No failed or
+% residual judgment is a positive entailment certificate.
+type u_export_graph (nat -> list uconstraint -> list lvl -> list lvl -> list nat -> list uconstraint -> o).
+type u_export_normal (lvl -> lvl -> o).
+type u_export_normals (list lvl -> list lvl -> o).
+type u_export_closed (lvl -> lvl -> o).
+type u_export_zeros (list lvl -> nat -> list nat -> o).
+type u_export_pairs (list lvl -> nat -> list uconstraint -> list uconstraint -> o).
+type u_export_row (lvl -> nat -> list lvl -> nat -> list uconstraint -> list uconstraint -> o).
+type u_export_relation (lvl -> nat -> lvl -> nat -> list uconstraint -> list uconstraint -> o).
+type u_export_upper (lvl -> nat -> lvl -> nat -> list uconstraint -> list uconstraint -> o).
+type u_export_strict (lvl -> nat -> lvl -> nat -> list uconstraint -> list uconstraint -> o).
+u_export_graph Count Context Levels Normalized Zeros Relations :-
+    u_export_normals Levels Normalized,
+    u_universal Count Context (UV\ sigma Actual\ u_sublevels UV Normalized Actual,
+        u_export_zeros Actual 0 Zeros, u_export_pairs Actual 0 Relations []).
+u_export_normals [] [].
+u_export_normals (L :: Ls) (M :: Ms) :- u_export_normal L M, u_export_normals Ls Ms.
+u_export_normal L M :- u_export_closed L M, !.
+u_export_normal L L.
+u_export_closed lz lz.
+u_export_closed (ls L) (ls M) :- u_export_closed L M.
+u_export_closed (lu L) (ls M) :- u_export_closed L M.
+u_export_closed (lm L M) N :- u_export_closed L A, u_export_closed M B, u_closed_max A B N.
+u_export_zeros [] N [].
+u_export_zeros (L :: Ls) N (N :: Ns) :- u_equal L lz, !, u_export_zeros Ls (s N) Ns.
+u_export_zeros (L :: Ls) N Ns :- u_export_zeros Ls (s N) Ns.
+u_export_pairs [] I Tail Tail.
+u_export_pairs (L :: Ls) I Relations Tail :-
+    u_export_row L I Ls (s I) Relations More,
+    u_export_pairs Ls (s I) More Tail.
+u_export_row L I [] J Tail Tail.
+u_export_row L I (M :: Ms) J Relations Tail :-
+    u_export_relation L I M J Relations More,
+    u_export_row L I Ms (s J) More Tail.
+% The weak question comes first: two nodes that are not related, which is
+% most pairs, cost two questions, and no question is asked twice.
+u_export_relation L I M J Relations Tail :- u_inequality L M, !, u_export_upper L I M J Relations Tail.
+u_export_relation L I M J Relations Tail :- u_inequality M L, !, u_export_strict M J L I Relations Tail.
+u_export_relation L I M J Tail Tail.
+u_export_upper L I M J (uc_eq (lp I) (lp J) :: Tail) Tail :- u_inequality M L, !.
+u_export_upper L I M J Relations Tail :- u_export_strict L I M J Relations Tail.
+u_export_strict L I M J (uc_le (lu (lp I)) (lp J) :: Tail) Tail :- u_inequality (lu L) M, !.
+u_export_strict L I M J (uc_le (lp I) (lp J) :: Tail) Tail.
+% Primitive record declarations and projections. Inductive admission precedes
+% this second judgment in the same query. It supplies Info, including the
+% elimination restriction, independently of the field names on the wire.
+type u_record_shape (nat -> list uconstraint -> block -> nat -> nat -> list info -> o).
+type record_shape (block -> nat -> nat -> list info -> o).
+type record_telescope (nat -> nat -> nat -> nat -> tm -> tm -> o).
+type record_fields (nat -> nat -> nat -> tm -> o).
+type record_domain (nat -> nat -> tm -> o).
+type record_type (nat -> nat -> tm -> tm -> tm -> o).
+type record_field (nat -> nat -> nat -> tm -> tm -> tm -> o).
+type record_function (nat -> nat -> list lvl -> tm -> tm -> o).
+type record_parameters (nat -> nat -> nat -> tm -> tm -> tm -> tm -> tm -> o).
+type record_components (nat -> tm -> list tm -> o).
+type record_length (nat -> list A -> o).
+type record_whnf (nat -> nat -> tm -> tm -> o).
+type record_bi (nat -> nat -> tm -> tm -> o).
+type record_motive (nat -> tm -> o).
+type record_branch (nat -> nat -> nat -> tm -> tm -> tm -> o).
+type record_eta (tm -> tm -> o).
+type record_eta_fields (list tm -> nat -> nat -> tm -> o).
+type record_neutral (tm -> o).
+
+% [I-Record] The number of actual fields excludes uniform parameters and
+% local definitions. Squashed Prop families cannot expose data fields.
+u_record_shape Count Cs (block B N Fs) K Eta Info :- u_universal Count Cs
+    (UV\ sigma Gs\ u_families UV Fs Gs, expect (record_shape (block B N Gs) K Eta Info) (rep "I-Record" [])).
+record_shape (block B N [family FT [CT]]) (s K) Eta [info N elim_all [Ms]] :-
+    (Eta = 0; Eta = 1), record_length (s K) Ms, record_telescope N (s K) B Eta FT CT.
+record_telescope (s N) K B Eta (prod A FT) (prod D CT) :- !,
+    pi x\ var_type x A => record_telescope N K B Eta (FT x) (CT x).
+record_telescope 0 K B Eta FT CT :- whnf FT S, is_sort S, record_fields K B Eta CT.
+record_fields (s K) B Eta CT :- !, whnf CT (prod A F), record_domain Eta B A,
+    pi x\ var_type x A => record_fields K B Eta (F x).
+record_fields 0 B Eta CT :- whnf CT W, spine W (ind B 0 UV) Ps.
+record_domain 0 B A.
+record_domain 1 B A :- no_family B [A].
+
+% [T-Proj] Shape checking rules out indices. The constructor type and
+% universe instance are obtained from the very family of this receiver.
+record_type B J R T A :- whnf T W, spine W H Ps, match_head H B 0 UV,
+    record_info B Count Eta, con_type B 0 0 UV CT, inst CT Ps Fields,
+    record_field J 0 B R Fields A.
+record_field 0 I B R CT A :- !, whnf CT (prod A F).
+record_field (s J) I B R CT A :- whnf CT (prod D F),
+    record_field J (s I) B R (F (proj B I R)) A.
+
+% [T-Field, R-Delta] A field used as a function can be partially applied.
+record_function B J UV T V :- record_info B Count Eta, ind_info B 0 UV N E Ms,
+    ind_type B 0 UV FT, con_type B 0 0 UV CT,
+    record_parameters N B J FT CT (ind B 0 UV) T V.
+record_parameters (s N) B J (prod A F) (prod D G) Family (prod A T) (lam A V) :- !,
+    pi x\ var_type x A => record_parameters N B J (F x) (G x) (app Family x) (T x) (V x).
+record_parameters 0 B J FT CT Family (prod Family T) (lam Family (x\ proj B J x)) :-
+    pi x\ var_type x Family => record_field J 0 B x CT (T x).
+
+record_length 0 [].
+record_length (s N) (X :: Xs) :- record_length N Xs.
+record_components B R Fields :- spine R H As, record_ctor H B UV,
+    record_info B Count Eta, ind_info B 0 UV N E Ms, split N As Ps Fields,
+    record_length Count Fields.
+type record_ctor (tm -> nat -> list lvl -> o).
+record_ctor H B UV :- flex H, !, fail.
+record_ctor (con B 0 0 UV) B UV.
+record_whnf B J R W :- record_components B R Fields, nth J Fields V, !, whnf V W.
+record_whnf B J R (proj B J R).
+record_bi B J R V :- record_components B R Fields, nth J Fields V, !.
+record_bi B J R (proj B J R).
+
+% A one-arm match on an eta record substitutes its projections for the
+% branch binders. On the Inductive form the motive must be nondependent.
+record_motive B P :- record_info B Count 0, !, record_constant_motive P.
+type record_constant_motive (tm -> o).
+record_constant_motive (abs (x\ A)) :- !.
+record_constant_motive P :- bi P (abs (x\ A)).
+record_motive B P.
+record_branch K J B R Br T :- flex Br, !, fail.
+record_branch 0 J B R T T.
+record_branch (s K) J B R (abs F) T :- record_branch K (s J) B R (F (proj B J R)) T.
+
+% [Eq-Record-Eta] The constructor side of the comparison is finite. Do not
+% eta-expand two neutral records or apply the rule to two constructors.
+record_eta C R :- record_components B C Fields, record_info B Count 1,
+    spine R H As, record_neutral H, record_eta_fields Fields 0 B R.
+record_neutral H :- flex H, !, fail.
+record_neutral (con B I J UV) :- !, fail.
+record_neutral (ind B I UV) :- !, fail.
+record_neutral (typ L) :- !, fail.
+record_neutral prop :- !, fail.
+record_neutral (prod A F) :- !, fail.
+record_neutral (lam A F) :- !, fail.
+record_neutral (abs F) :- !, fail.
+record_neutral H.
+record_eta_fields [] J B R.
+record_eta_fields (V :: Vs) J B R :- conv V (proj B J R), record_eta_fields Vs (s J) B R.
+
+
+% A template block retains its checked arity scheme. Parameter sorts range
+% over Prop as well as Type; numeric universe instances still bound them.
+% template_block B K Cs N A Ts stores the complete admitted declaration.
+% Module scope selects graph edges; it never changes which slots are fixed.
+type template_block (nat -> nat -> list uconstraint -> nat -> tm -> list tm -> o).
+type template_active o.
+template_active :- template_block B K Cs N A Ts, !.
+type template_shape (nat -> list uconstraint -> block -> o).
+type template_eligible (nat -> list uconstraint -> block -> o).
+type template_params (nat -> tm -> list nat -> list nat -> o).
+type template_slot (tm -> nat -> o).
+type template_repeated (nat -> list nat -> o).
+type template_indices (nat -> list nat -> tm -> list uconstraint -> o).
+type template_result_slot (tm -> nat -> o).
+type template_in_level (lvl -> nat -> o).
+type template_fixed (nat -> nat -> o).
+type template_member (nat -> list nat -> o).
+type template_arity (tm -> o).
+type template_level (lvl -> o).
+type template_ctors (nat -> nat -> list tm -> o).
+type template_ctor (nat -> tm -> o).
+type template_result (tm -> tm -> tm -> o).
+type template_lower (tm -> tm -> o).
+type template_specialize (nat -> nat -> tm -> list tm -> list tm -> list lvl -> tm -> o).
+type template_recursion (nat -> list tsort -> o).
+type template_generic (nat -> tm -> list tsort -> list lvl -> (list tm -> o) -> o).
+type template_quality_slots (nat -> nat -> tm -> list lvl -> list tsort -> list tsort -> o).
+type template_data_field (tm -> o).
+type template_quality_self (nat -> o).
+type template_domain (tm -> tm -> tm -> o).
+type template_coordinates (nat -> tm -> list tm -> list tsort -> list tsort -> o).
+kind tsort type.
+type tsort (nat -> tm -> tsort).
+type template_args (nat -> tm -> list tm -> list tsort -> list lvl -> tm -> o).
+type template_open (nat -> o).
+type template_seen (tm -> list nat -> list nat -> o).
+type template_type (tm -> tm -> o).
+type template_sort_of (tm -> tm -> o).
+type template_end (tm -> tm -> o).
+type template_final (tm -> list tsort -> list lvl -> tm -> o).
+type template_sort (lvl -> list tsort -> list lvl -> tm -> o).
+type template_lookup (nat -> list tsort -> tm -> o).
+type template_join (tm -> tm -> tm -> o).
+type template_floor (tm -> nat -> list lvl -> list tm -> list tm -> tm -> o).
+type template_fields (nat -> list lvl -> list tm -> list tm -> o).
+type template_proofs (tm -> o).
+type template_busy (nat -> o).
+type template_rigid (tm -> o).
+template_rigid T :- flex T, !, fail.
+template_rigid T.
+
+template_shape K Cs Bl :- expect (template_eligible K Cs Bl) (rep "I-Template" []).
+template_eligible (s K) Cs (block B N (family A Ts :: [])) :-
+    template_params N A [] (First :: More), template_indices (s K) (First :: More) A Cs,
+    template_bounds (s K) (First :: More) Cs,
+    template_ctors B N Ts.
+
+% A lowered coordinate may occur on the left of a non-strict upper bound.
+% Strict or equality bounds and right-hand occurrences keep that coordinate
+% fixed. Other parameters of the same family can still be lowered.
+type template_bounds (nat -> list nat -> list uconstraint -> o).
+type template_model (nat -> list uconstraint -> o).
+type template_some_free (list nat -> list nat -> list uconstraint -> o).
+type template_static (nat -> list nat -> list uconstraint -> o).
+type template_consistent (nat -> list uconstraint -> o).
+type template_blocked_slot (list uconstraint -> nat -> o).
+type template_mentions (list uconstraint -> nat -> o).
+template_bounds K Slots Cs :- template_some_free Slots Slots Cs, template_consistent K Cs.
+template_consistent K [] :- !.
+template_consistent K Cs :-
+    u_default_levels lp 0 K UV All Cs, u_subconstraints UV Cs Cs, template_model K All.
+template_model K Cs :- u_global_fresh (u_universal_bind K [] Cs (UV\ u_nat_le 1 0)), !, fail.
+template_model K Cs.
+template_some_free (I :: Is) Slots Cs :- template_static I Slots Cs, !, template_some_free Is Slots Cs.
+template_some_free (I :: Is) Slots Cs.
+template_static I Slots Cs :- template_repeated I Slots; template_blocked_slot Cs I.
+template_blocked_slot (uc_le (lp I) R :: More) I :- !,
+    (template_in_level R I; template_blocked_slot More I).
+template_blocked_slot (C :: More) I :- template_mentions [C] I; template_blocked_slot More I.
+template_mentions (uc_le L R :: More) I :- template_in_level L I; template_in_level R I.
+template_mentions (uc_eq L R :: More) I :- template_in_level L I; template_in_level R I.
+template_mentions (C :: More) I :- template_mentions More I.
+
+% A candidate occurs only at the end of a uniform parameter's arity.
+% Other positions cannot hide a bound level, including in global instances.
+template_params 0 A Slots Slots :- !, template_arity A.
+template_params (s N) (prod D F) Seen Slots :-
+    template_seen D Seen Next,
+    pi x\ u_local x => template_params N (F x) Next Slots.
+template_seen D Seen (I :: Seen) :- template_slot D I, !.
+template_seen D Seen Seen :- u_term [] D D.
+template_slot (typ (lp I)) I.
+template_slot (prod D F) I :- u_term [] D D, pi x\ u_local x => template_slot (F x) I.
+% A level at two arity ends must remain the same for both arguments.
+template_repeated I (I :: Is) :- !, template_member I Is.
+template_repeated I (J :: Is) :- template_repeated I Is.
+template_member I (I :: Is) :- !.
+template_member I (J :: Is) :- template_member I Is.
+template_indices 0 Slots A Cs.
+template_indices (s N) Slots A Cs :-
+    (template_member N Slots; template_result_slot A N; template_mentions Cs N), !, template_indices N Slots A Cs.
+% A level present only in the result denotes a fixed declaration universe.
+% A forged extra index that appears nowhere cannot become a template slot.
+template_result_slot (prod D F) I :- pi x\ u_local x => template_result_slot (F x) I.
+template_result_slot (typ L) I :- template_in_level L I.
+template_in_level (lp I) I.
+template_in_level (ls L) I :- template_in_level L I.
+template_in_level (lu L) I :- template_in_level L I.
+template_in_level (lm L R) I :- template_in_level L I ; template_in_level R I.
+template_fixed B I :- template_block B K Cs N A Ts, I < K,
+    template_params N A [] Slots, (template_fixed_slot I Slots; template_static I Slots Cs).
+type template_fixed_slot (nat -> list nat -> o).
+template_fixed_slot I Slots :- template_member I Slots, !, fail.
+template_fixed_slot I Slots.
+template_arity (prod D F) :- u_term [] D D, pi x\ u_local x => template_arity (F x).
+template_arity (typ L) :- template_level L.
+template_arity prop.
+template_level (lp I) :- !.
+template_level (lm L R) :- !, template_level L, template_level R.
+template_level L :- u_closed L.
+template_ctors B N [].
+template_ctors B N (T :: Ts) :-
+    ((pi uv\ u_term [] (ind B 0 uv) (ind B 0 uv)) =>
+        (pi h\ pi p\ u_term [] (app h p) (app h p) :- template_nested (app h p)) =>
+        template_ctor N T),
+    template_ctors B N Ts.
+% A saturated template occurrence does not expose its private inferred bounds.
+% Check its arguments: a genuine use such as Wrap Type@{u} still exposes u.
+type template_nested (tm -> o).
+template_nested T :- template_spine T [] H As, template_owner H B UV,
+    template_nested_fixed B 0 UV,
+    template_block B K Scheme Count A Cs, split Count As Ps Rest, u_terms [] As As.
+% A fixed coordinate remains observable in the type, even when saturated.
+% Its value cannot hide an abstract universe of the enclosing declaration.
+type template_nested_fixed (nat -> nat -> list lvl -> o).
+template_nested_fixed B I [].
+template_nested_fixed B I (U :: Us) :- template_fixed B I, !,
+    u_sublevel [] U U, template_nested_fixed B (s I) Us.
+template_nested_fixed B I (U :: Us) :- template_nested_fixed B (s I) Us.
+template_ctor 0 T :- !, u_term [] T T.
+template_ctor (s N) (prod D F) :- pi x\ u_local x => template_ctor N (F x).
+
+% Keep the result in its declaration coordinates. A fixed parameter domain
+% uses its owner's level even when the caller supplies a smaller argument.
+type template_runtime_block (nat -> nat -> tm -> list tm -> o).
+type template_runtime_arity (nat -> list nat -> list uconstraint -> nat -> tm -> tm -> o).
+type template_fix_level (tm -> nat -> lvl -> tm -> o).
+template_runtime_block B N A Ts :- template_block B K Cs N Written Ts,
+    template_bound_arity B N Written Cs A.
+type template_bound_arity (nat -> nat -> tm -> list uconstraint -> tm -> o).
+template_bound_arity B 1 A [] A :- !.
+template_bound_arity B N Written Cs A :- template_params N Written [] Slots,
+    template_runtime_arity B Slots Cs N Written A.
+template_runtime_arity B Slots Cs 0 A A :- !.
+template_runtime_arity B Slots Cs (s N) (prod D F) (prod E G) :-
+    (template_slot D I, template_static I Slots Cs, !, template_fix_level D I (lg B I) E; E = D),
+    pi x\ u_local x => template_runtime_arity B Slots Cs N (F x) (G x).
+template_fix_level (typ (lp I)) I U (typ U).
+template_fix_level (prod D F) I U (prod D G) :- pi x\ template_fix_level (F x) I U (G x).
+
+% Only a completed arity can lower to Prop. The ordinary type of a
+% partial application is still its residual telescope.
+template_result F T R :- template_rigid T, T = typ L, template_lower F S, !, R = S.
+template_result F T T.
+template_open B :- template_busy B, !, fail.
+template_open B.
+template_lower F S :-
+    template_spine F [] H As, template_rigid H, H = ind B 0 UV, template_runtime_block B N A Ts,
+    split N As Ps Is, template_specialize B N A Ts Ps UV S.
+% The singleton hypothesis is universal in the terms at these parameter sorts.
+template_specialize B N A Ts Ps UV prop :- template_quality_self B, !.
+template_specialize B N A Ts Ps UV prop :- template_recursion B Coordinates,
+    template_coordinates N A Ps [] Actual, Actual == Coordinates, !.
+template_specialize B N A Ts Ps UV S :- template_open B, template_args N A Ps [] UV Sort,
+    template_floor Sort B UV Ps Ts S.
+template_args 0 A [] Seen UV S :- !, template_final A Seen UV S.
+template_args (s N) (prod D F) (P :: Ps) Seen UV S :-
+    template_slot D I, template_type P PT, template_end PT V, !,
+    template_args N (F P) Ps (tsort I V :: Seen) UV S.
+template_args (s N) (prod D F) (P :: Ps) Seen UV S :- template_args N (F P) Ps Seen UV S.
+
+% These applications have already been checked. For products use both
+% domain and codomain sorts; the lightweight retype only classifies Prop.
+template_type P T :- flex P, !, fail.
+template_type (typ L) T :- !, u_successor L K, T = typ K.
+template_type (prod D F) S :- !, template_sort_of D A,
+    (pi x\ var_type x D => template_sort_of (F x) B), prod_sort A B S.
+template_type (lam D F) (prod D G) :- !, pi x\ var_type x D => template_type (F x) (G x).
+template_type (letin V D F) T :- !, template_type (F V) T.
+template_type (app F P) T :- !, template_type F TF, whnf TF (prod D G),
+    template_result (app F P) (G P) T.
+template_type P T :- retype P T.
+template_sort_of P S :- template_type P T, whnf T S, template_rigid S, is_sort S.
+template_end T S :- whnf T W, template_rigid W, template_arity_sort W S.
+type template_arity_sort (tm -> tm -> o).
+template_arity_sort prop prop.
+template_arity_sort (typ L) (typ L).
+template_arity_sort (prod D F) S :- pi x\ var_type x D => template_end (F x) S.
+template_final (prod D F) Seen UV S :- pi x\ u_local x => template_final (F x) Seen UV S.
+template_final (typ L) Seen UV S :- template_sort L Seen UV S.
+template_sort (lp I) Seen UV S :- template_lookup I Seen V, !, S = V.
+template_sort (lp I) Seen UV (typ L) :- !, nth I UV L.
+template_sort (lm L R) Seen UV S :- !, template_sort L Seen UV A, template_sort R Seen UV B,
+    template_join A B S.
+template_sort L Seen UV (typ L) :- u_closed L.
+template_lookup I (tsort I S :: More) S :- !.
+template_lookup I (Entry :: More) S :- template_lookup I More S.
+template_join prop S S :- !.
+template_join S prop S :- !.
+template_join (typ L) (typ M) (typ U) :- lmax L M U.
+template_floor prop B UV Ps Ts prop :- template_fields B UV Ps Ts, !.
+template_floor prop B UV Ps Ts (typ lz) :- !.
+template_floor (typ L) B UV Ps Ts (typ L).
+template_fields B UV Ps (C :: []) :- template_runtime_block B N A Ts,
+    template_coordinates N A Ps [] Coordinates, con_type B 0 0 UV CT,
+    template_generic N A Coordinates UV (Xs\ sigma T\ inst CT Xs T,
+        (template_busy B => template_recursion B Coordinates => template_proofs T)),
+    template_quality_slots B N A UV Coordinates Coordinates.
+
+% Each coordinate in the result must determine a constructor field's sort
+% quality. Move just that coordinate from Prop to Set. A field whose sort
+% changes witnesses the connection. The result quality of a recursive
+% occurrence cannot supply its own connection. For instance, the quality
+% of A -> B depends on B, even if both levels occur in the result maximum.
+template_quality_slots B N A UV Coordinates [].
+template_quality_slots B N A UV Coordinates (tsort I S :: Rest) :-
+    template_result_slot A I, !, con_type B 0 0 UV CT,
+    template_generic N A (tsort I (typ lz) :: Coordinates) UV (Xs\ sigma T\
+        inst CT Xs T, (template_quality_self B => template_data_field T)),
+    template_quality_slots B N A UV Coordinates Rest.
+template_quality_slots B N A UV Coordinates (Slot :: Rest) :-
+    template_quality_slots B N A UV Coordinates Rest.
+template_data_field (prod D F) :- retype D S, whnf S (typ L), !.
+template_data_field (prod D F) :- pi x\ var_type x D => template_data_field (F x).
+
+% Open the telescope with arbitrary parameters of these sorts, including
+% dependent arity parameters whose final sort is supplied by a slot.
+template_generic 0 A Coordinates UV G :- !, G [].
+template_generic (s N) (prod D F) Coordinates UV G :-
+    template_slot D I, template_lookup I Coordinates V, !,
+    sigma Dom\ (u_term UV D Original, template_domain Original V Dom,
+        pi x\ var_type x Dom => template_generic N (F x) Coordinates UV (Xs\ G (x :: Xs))).
+template_generic (s N) (prod D F) Coordinates UV G :-
+    u_term UV D Dom, pi x\ var_type x Dom => template_generic N (F x) Coordinates UV (Xs\ G (x :: Xs)).
+template_domain (prod D F) S (prod D G) :- !, pi x\ var_type x D => template_domain (F x) S (G x).
+template_domain T S S.
+template_coordinates 0 A [] Seen Seen :- !.
+template_coordinates (s N) (prod D F) (P :: Ps) Seen Sorts :-
+    template_slot D I, template_type P PT, template_end PT V, !,
+    template_coordinates N (F P) Ps (tsort I V :: Seen) Sorts.
+template_coordinates (s N) (prod D F) (P :: Ps) Seen Sorts :- template_coordinates N (F P) Ps Seen Sorts.
+template_proofs (prod D F) :- !, retype D S, whnf S prop,
+    pi x\ var_type x D => template_proofs (F x).
+template_proofs T :- whnf T W, template_rigid W, spine W (ind B I UV) As.
+
+
+% An applied uniform parameter determines its own template coordinate.
+% In a partial application the remaining coordinates still determine domains.
+type template_spines (tm -> tm -> list tm -> list tm -> o).
+type template_heads (tm -> tm -> nat -> list lvl -> list lvl -> o).
+type template_spine_bounds (nat -> tm -> list tm -> list lvl -> list lvl -> o).
+type template_supplied (tm -> list tm -> list nat -> list nat -> o).
+type template_remaining (nat -> list nat -> list lvl -> list lvl -> o).
+type template_match_instance (nat -> list lvl -> list lvl -> o).
+template_spines M N As Bs :- template_spine M [] H As, template_spine N [] K Bs,
+    template_rigid H, template_rigid K, template_heads H K B UV UW,
+    template_runtime_block B Count A Ts, template_spine_bounds Count A As UV UW.
+template_heads (ind B 0 U) (ind B 0 V) B U V.
+template_heads (con B 0 J U) (con B 0 J V) B U V.
+template_spine_bounds Count A As UV UW :- split Count As Ps More, !.
+template_spine_bounds Count A As UV UW :- template_supplied A As [] Slots,
+    template_remaining 0 Slots UV UW.
+template_supplied A [] Seen Seen.
+template_supplied (prod D F) (P :: Ps) Seen Slots :- template_slot D I, !,
+    template_supplied (F P) Ps (I :: Seen) Slots.
+template_supplied (prod D F) (P :: Ps) Seen Slots :- template_supplied (F P) Ps Seen Slots.
+template_remaining I Slots [] [].
+template_remaining I Slots (U :: Us) (V :: Vs) :- template_member I Slots, !,
+    template_remaining (s I) Slots Us Vs.
+template_remaining I Slots (U :: Us) (V :: Vs) :- u_equal U V, template_remaining (s I) Slots Us Vs.
+template_match_instance B UV UW :- UV == UW, !.
+template_match_instance B UV UW :- template_block B K Cs N A Ts, !.
+template_match_instance B UV UW :- u_equal_all UV UW.
+
+
+% Judge the contiguous application once. A cast or let ends the spine: its
+% head is independently checked as a value at its own function type.
+type application_head (tm -> tm -> o).
+type application_type (tm -> tm -> tm -> o).
+type apply_product (tm -> tm -> tm -> tm -> o).
+type template_spine (tm -> list tm -> tm -> list tm -> o).
+type template_defaults (tm -> o).
+type template_owner_defaults (tm -> o).
+type template_owner (tm -> nat -> list lvl -> o).
+type template_missing (nat -> nat -> tm -> list tm -> list lvl -> o).
+type template_default_slot (nat -> tm -> list lvl -> o).
+type template_default (nat -> nat -> lvl -> o).
+type uc_default (nat -> nat -> lvl -> uconstraint).
+application_head M T :- flex M, !, fail.
+application_head (ind B I UV) A :- !,
+    expect (ind_type B I UV A) (rep "T-Ind" (ind B I UV :: [])).
+application_head (con B I J UV) A :- !,
+    expect (con_type B I J UV A) (rep "T-Constr" (con B I J UV :: [])).
+application_head (pfield B J UV) A :- !,
+    expect (record_function B J UV A _) (rep "T-Proj" []).
+application_head (app F X) T :- !, application_type F X T.
+application_head M T :- infer M T.
+application_type M N T :- application_head M TM, apply_product M N TM R,
+    template_result (app M N) R T.
+apply_product M N TM T :- whnf TM W,
+    expect (W = prod A B) (rep "T-App" (M :: TM :: [])),
+    check N A,
+    T = B N.
+template_spine M As H Bs :- flex M, !, H = M, Bs = As.
+template_spine (app F X) As H Bs :- !, template_spine F (X :: As) H Bs.
+template_spine H As H As.
+template_owner (ind B 0 UV) B UV.
+template_owner (con B 0 J UV) B UV.
+template_owner (pfield B J UV) B UV.
+
+% An unapplied slot uses its owner's default, or specializes at Set.
+% Each supplied varying parameter specializes from its actual argument.
+template_defaults F :- template_active, !, template_owner_defaults F.
+template_defaults F.
+template_owner_defaults F :- template_spine F [] H As, template_rigid H,
+    template_owner H B UV, template_runtime_block B N A Ts, !,
+    expect (template_fixed_bounds B 0 UV, template_missing B N A As UV) (rep "I-Template-Default" [F]).
+template_owner_defaults F.
+template_missing B 0 A As UV :- !.
+template_missing B (s N) (prod D F) (P :: Ps) UV :- !,
+    pi x\ u_local x => template_missing B N (F x) Ps UV.
+template_missing B (s N) (prod D F) [] UV :-
+    template_default_slot B D UV, pi x\ u_local x => template_missing B N (F x) [] UV.
+template_default_slot B D UV :- template_slot D I, !, nth I UV U, template_default B I U.
+template_default_slot B D UV.
+
+% Set specialization is the eta-expanded function over Set. Any other
+% unsupplied parameter denotes its owner's shared default.
+template_default B I U :- u_recording, !, u_record (uc_default B I U).
+template_default B I U :- u_equal U lz, !.
+template_default B I U :- u_global_known (lg B I), u_equal U (lg B I).
+
+type template_fixed_bounds (nat -> nat -> list lvl -> o).
+template_fixed_bounds B I [].
+template_fixed_bounds B I (U :: Us) :- template_fixed B I, !,
+    u_equal U (lg B I), template_fixed_bounds B (s I) Us.
+template_fixed_bounds B I (U :: Us) :- template_fixed_bounds B (s I) Us.

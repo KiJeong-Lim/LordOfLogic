@@ -1,0 +1,206 @@
+% LoL ALPHA2 tactics propose raw terms; elaboration and admission judge them.
+import lol.hol.proof.
+import lol.hol.tactics_elim.
+import lol.hol.tactics_eq.
+
+type p_intro (string -> ptac).
+type p_intros (list string -> ptac).
+type p_intros_auto ptac.
+type p_apply (raw -> ptac).
+type p_assumption ptac.
+type p_constructor_auto ptac.
+type p_constructor (nat -> ptac).
+type p_split ptac.
+type p_left ptac.
+type p_right ptac.
+type p_exists (list raw -> ptac).
+type p_reflexivity ptac.
+type p_user (string -> list raw -> ptac).
+type p_user_tactic (string -> list raw -> tm -> raw -> o).
+
+type p_intro_many (list string -> tm -> raw -> o).
+type p_intro_given (list string -> phints -> tm -> raw -> o).
+type p_intro_head (string -> list string -> phints -> tm -> raw -> o).
+type p_intro_name (string -> string -> tm -> string -> o).
+type p_intro_all (tm -> raw -> o).
+type p_intro_all_head (phints -> tm -> raw -> o).
+type p_intro_while (phints -> tm -> raw -> o).
+type p_intro_cast (tm -> raw -> raw -> o).
+type p_typed_hole (tm -> raw -> o).
+type p_typed (tm -> raw -> raw -> o).
+type p_prepare_apply (raw -> tm -> raw -> o).
+type p_apply_args (phints -> tm -> tm -> list raw -> o).
+type p_signature_names (tm -> phints -> o).
+type p_projection_names (nat -> nat -> phints -> phints -> o).
+type p_family (tm -> nat -> nat -> list lvl -> list tm -> list tm -> o).
+type p_constructor_term (tm -> nat -> raw -> o).
+type p_last (list tm -> tm -> o).
+type p_reflexive_term (tm -> tm -> o).
+
+% A hole of a given type, with a request and a term of the binders around it.
+p_typed_hole T (r_hole 0 Request H T).
+
+% `intro`, and `intros` with names, read the goal as it is written when it is
+% a product or a `let`. A `let` becomes a local definition: its variable has
+% its body in the context of the rest, and the rest proves the body of the
+% `let` (Rocq: LocalDef). Any other goal is reduced to a product, and the
+% proof keeps that goal as a cast (Rocq: intro_then_gen with ~force:true,
+% which calls hnf_in_concl).
+p_tactic (p_intro Name) A R :- p_new_names (Name :: []), p_intro_many (Name :: []) A R.
+% Rocq clears an intros wildcard after the whole batch. A discarded
+% dependent can therefore refer to another discarded hypothesis.
+type p_wildcards o.
+type p_dropped (tm -> o).
+type p_kept_type (tm -> o).
+type p_wild_names (list string -> list string -> o).
+type p_intro_scope (string -> tm -> tm -> o -> o).
+type p_check_dropped (tm -> o).
+p_tactic (p_intros Names) A R :- e_member "_" Names, !, p_wild_names Names Written,
+    p_new_names Written, (p_wildcards => p_intro_many Names A R).
+p_tactic (p_intros Names) A R :- p_new_names Names, p_intro_many Names A R.
+p_wild_names [] [].
+p_wild_names ("_" :: Ns) Rest :- !, p_wild_names Ns Rest.
+p_wild_names (Name :: Ns) (Name :: Rest) :- p_wild_names Ns Rest.
+p_intro_scope Given X D G :- p_wildcards, !, p_wild_scope Given X D G.
+p_intro_scope Given X D G :- G.
+type p_wild_scope (string -> tm -> tm -> o -> o).
+p_wild_scope "_" X D G :- !, (p_dropped X => G).
+p_wild_scope Given X D G :- var_body X V, !, (p_kept_type D => p_kept_type V => G).
+p_wild_scope Given X D G :- p_kept_type D => G.
+p_check_dropped A :- p_wildcards, !,
+    e_need (e_absent (p_dropped X, (p_mentions A X; p_kept_type D, p_mentions D X))) "P-Used" [].
+p_check_dropped A.
+type p_intro_raw (string -> string -> tm -> raw -> raw -> o).
+p_intro_raw "_" Name X R (p_note (pn_clear X) R) :- p_wildcards, !.
+p_intro_raw Given Name X R Out :- p_name_raw Given Name X R Out.
+
+p_intro_many Names A R :- p_hints A Hints, p_intro_given Names Hints A R.
+p_intro_given [] Hints A R :- p_check_dropped A, p_typed_hole A Hole, p_keep_hints Hints Hole R.
+p_intro_given (Name :: Names) Hints A R :- p_bare A B, p_intro_head Name Names Hints B R.
+p_intro_name "" Hint A Name :- !, p_choose_name Hint A Name.
+p_intro_name Given Hint A Given.
+p_intro_head Given Names Hints A R :- e_absent (flex A), A = letin V T F, !,
+    p_tail_hints Hints Hint Domain More, p_intro_name Given Hint T Name,
+    (pi x\ var_type x T => var_body x V => p_pending_name Name =>
+        (p_intro_scope Given x T (p_intro_given Names More (F x) (Rest x)), p_typed (F x) (Rest x) (Typed x),
+        p_keep_domain x Domain (Typed x) (Local x), p_intro_raw Given Name x (Local x) (Body x))),
+    R = r_let (r_ref T []) (r_ref V []) Body.
+% The rest of a proof under a `let` proves the body of the `let` with the
+% variable in it. The term is read against the whole `let`, whose body has
+% the value where the variable is, so the rest is given its type: what the
+% rest introduces has the variable in its type, as in Rocq (`q : k = k`).
+p_typed T (r_hole 0 Request H T) R :- !, R = r_hole 0 Request H T.
+p_typed T R (r_hole 0 R H T).
+type p_intro_product (tm -> tm -> (tm -> tm) -> o).
+p_intro_product A D B :- e_absent (flex A), A = prod D B, !.
+p_intro_product A D B :- p_refold_product A D B, !.
+p_intro_product A D B :- p_product A D B.
+p_intro_head Given Names Hints A R :-
+    p_intro_product A D B, p_tail_hints Hints Hint Domain More, p_intro_name Given Hint D Name,
+    (pi x\ var_type x D => p_pending_name Name =>
+        (p_intro_scope Given x D (p_intro_given Names More (B x) (Rest x)), p_keep_domain x Domain (Rest x) (Local x), p_intro_raw Given Name x (Local x) (Body x))),
+    p_intro_cast A (r_untyped Body) R.
+p_intro_cast A R R :- A = prod D B, !.
+p_intro_cast A R (r_annot R (r_ref A [])).
+% `intros` without a name introduces while the goal is a product or a `let`
+% as it is written, and reduces nothing (Rocq: intro_forthcoming_then_gen).
+p_tactic p_intros_auto A R :- p_intro_all A R.
+p_intro_all A R :- p_hints A Hints, p_intro_while Hints A R.
+p_intro_while Hints A R :- p_bare A B, e_absent (flex B), p_intro_all_head Hints B R, !.
+p_intro_while Hints A R :- p_typed_hole A R.
+p_intro_all_head Hints (prod D B) (p_intro_lam Name (x\ pn_auto x "") Body) :-
+    p_tail_hints Hints Hint Domain More, p_with_binder_name Hint D Name
+        (pi x\ var_type x D => p_pending_name Name =>
+            (p_intro_while More (B x) (Rest x), p_keep_domain x Domain (Rest x) (Body x))).
+p_intro_all_head Hints (letin V T F) (r_let (r_ref T []) (r_ref V []) Body) :-
+    p_tail_hints Hints Hint Domain More, p_with_binder_name Hint T Name
+        (pi x\ var_type x T => var_body x V => p_pending_name Name =>
+            (p_intro_while More (F x) (Rest x), p_typed (F x) (Rest x) (Typed x),
+            p_keep_domain x Domain (Typed x) (Local x), p_name_raw "" Name x (Local x) (Body x))).
+
+p_tactic (p_apply Template) A R :- p_prepare_apply Template A R.
+p_prepare_apply Template A (r_apps R Args) :-
+    e_fresh Template R,
+    (p_phase p_passive => e_in R F T),
+    p_argument_hints F Hints, p_apply_args Hints T A Args.
+% A generated premise has the binder spellings of that particular formal
+% argument. The declaration's universe instance does not affect a spelling.
+p_argument_hints F Hints :- spine F Head Args, e_absent (flex Head),
+    p_head_hints Head All, p_drop_actuals Args All Hints, !.
+p_argument_hints F p_no_hints.
+type p_head_hints (tm -> phints -> o).
+p_head_hints Head Hs :- p_domain_names X Given, X == Head, !,
+    (var_type X T, !, p_local_args T Given Hs ; Hs = Given).
+p_head_hints (proj B J _) Hs :- p_known_id B, p_known_id J, p_projection_names B J _ Hs, !.
+p_head_hints (pfield B J _) Hs :- p_known_id B, p_known_id J, p_projection_names B J Hs _, !.
+p_head_hints Head Hs :- p_syntax_head Head Key, p_signature_names Key Hs.
+% A local's display names include lets. Keep only products when indexing
+% arguments. Read the spelling tree without instantiating a flexible type.
+type p_local_args (tm -> phints -> phints -> o).
+p_local_args _ Given p_no_hints :- flex Given, !.
+p_local_args _ p_no_hints p_no_hints :- !.
+p_local_args T Hs Hs :- flex T, !.
+p_local_args (letin _ _ B) (p_binding _ _ Rest) Hs :- !, pi x\ p_local_args (B x) Rest Hs.
+p_local_args (prod _ B) (p_binding N D Rest) (p_binding N D Tail) :- !, pi x\ p_local_args (B x) Rest Tail.
+p_local_args (cast T _) Given Hs :- !, p_local_args T Given Hs.
+p_local_args _ Hs Hs.
+type p_drop_actuals (list tm -> phints -> phints -> o).
+p_drop_actuals [] Hs Hs.
+p_drop_actuals (X :: Xs) Hs Out :- p_tail_hints Hs _ _ More, p_drop_actuals Xs More Out.
+% Prefer the supplied term itself. Otherwise add one explicit raw hole per
+% product until the conclusion converts to the goal, before asking premises.
+p_apply_args Hints T A [] :- sub T A, !.
+p_apply_args Hints T A (Hole :: Args) :-
+    p_product T D B, p_tail_hints Hints _ Bindings More,
+    p_keep_hints Bindings (r_hole 0 Request H D) Hole, p_apply_args More (B H) A Args.
+
+p_tactic p_assumption A (r_ref X []) :-
+    p_live Name X, e_absent (flex X), p_local_type X T, sub T A, !.
+
+% Constructor numbers are local to the family obtained from the goal. The
+% environment's admitted metadata supplies parameter count and constructors.
+p_family A B I UV Params Indices :-
+    whnf A W, spine W (ind B I UV) Args,
+    ind_info B I UV Count Elimination Marks, split Count Args Params Indices.
+p_constructor_term A J (r_ref C []) :-
+    p_family A B I UV Params Indices,
+    con_type B I J UV T, apps (con B I J UV) Params C.
+p_tactic p_constructor_auto A R :-
+    p_constructor_term A J Head, p_prepare_apply Head A R.
+p_tactic (p_constructor Number) A R :-
+    Number > 0, J is Number - 1,
+    p_constructor_term A J Head, p_prepare_apply Head A R.
+p_tactic p_split A R :-
+    p_family A B I UV Params Indices, ind_info B I UV Count Elimination (Marks :: []),
+    p_constructor_term A 0 Head, p_prepare_apply Head A R.
+p_tactic p_left A R :-
+    p_family A B I UV Params Indices, ind_info B I UV Count Elimination (Left :: Right :: []),
+    p_constructor_term A 0 Head, p_prepare_apply Head A R.
+p_tactic p_right A R :-
+    p_family A B I UV Params Indices, ind_info B I UV Count Elimination (Left :: Right :: []),
+    p_constructor_term A 1 Head, p_prepare_apply Head A R.
+p_tactic (p_exists (Witness :: Witnesses)) A R :-
+    p_family A B I UV Params Indices, ind_info B I UV Count Elimination (Marks :: []),
+    p_constructor_term A 0 Head,
+    p_prepare_apply (r_apps Head (Witness :: Witnesses)) A R.
+
+% Equality is recognized structurally, not by a library name or global ID:
+% one indexed constructor, with no fields after parameters, whose sole index
+% repeats the last parameter. This is the ordinary reflexive equality family.
+p_last (X :: []) X :- !.
+p_last (X :: Xs) Last :- p_last Xs Last.
+p_reflexive_term A C :-
+    p_family A B I UV Params (Right :: []),
+    ind_info B I UV Count Elimination ([] :: []),
+    p_last Params Left,
+    con_type B I 0 UV T, inst T Params Result,
+    whnf Result W, spine W (ind B I UV) Args,
+    split Count Args ResultParams (Index :: []),
+    conv Left Index, sub Result A,
+    apps (con B I 0 UV) Params C.
+p_tactic p_reflexivity A (r_ref C []) :- p_reflexive_term A C.
+
+% Loaded tactics return prepared raw proposals. A tactic that starts from a
+% template calls e_fresh itself; existing typed hole cells remain intact.
+% Preparation and final kernel admission still check the resulting term.
+p_tactic (p_user Name Args) A R :- p_user_tactic Name Args A R.

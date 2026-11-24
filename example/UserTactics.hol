@@ -1,0 +1,12 @@
+% Two tactics written in Hol. example/UserTactics.lol loads this program with
+% Load Tactics and calls them as tactic NAME (ARGUMENTS).
+import lol.hol.tactics.
+
+% tactic give (t): proposes the term t for the goal, with fresh universe
+% references (e_fresh). Each _ in t that is not solved becomes a new goal.
+p_user_tactic "give" (Template :: []) A R :- e_fresh Template R.
+
+% tactic hypothesis: proves the goal with a named hypothesis whose type fits
+% the goal by sub, the cumulativity judgment of lol/hol/kernel.hol.
+p_user_tactic "hypothesis" [] A (r_ref X []) :-
+    p_name Name X, e_absent (flex X), p_local_type X T, sub T A, !.

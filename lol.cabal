@@ -1,0 +1,128 @@
+name: lol
+version: 0.1.0
+synopsis: A proof assistant whose kernel is a λProlog program
+description: LoL checks a calculus of inductive constructions with a kernel written in λProlog and run by the Hol engine.
+license: BSD3
+license-file: LICENSE
+author: 林 起靖
+maintainer: gijungdduk@naver.com
+copyright: 2021-2026, Kijeong Lim
+category: Theorem Provers
+build-type: Simple
+cabal-version: 2.0
+extra-doc-files:
+  README.md
+  README.ko.md
+  docs/*.md
+  docs/*.ko.md
+extra-source-files:
+  stack.yaml
+  stack.yaml.lock
+  lol/hol/*.hol
+  lol/theories/*.lol
+  example/*.lol
+  example/*.hol
+  example/rejected/*.lol
+  src/X/machine.h
+  src/X/higher_machine.h
+  src/X/term.h
+  src/X/native_memory.h
+  src/X/native_vector.h
+  src/X/sha256.h
+
+executable lol
+  hs-source-dirs: src
+  default-language: Haskell2010
+  main-is: Main.hs
+  ghc-options: -O2 -funbox-strict-fields -fspec-constr -fexpose-all-unfoldings -fspecialise-aggressively
+  if os(linux) && impl(ghc < 9.8)
+    ghc-options: -with-rtsopts=-V0.001
+  build-depends: base >= 4.7 && < 5, array >= 0.5, containers >= 0.6, transformers >= 0.5, pretty-terminal >= 0.1, directory >= 1.3, vector >= 0.12, extra >= 1.7, filepath >= 1.5, process >= 1.0
+  other-modules:
+    Calc.Presburger.Internal
+    Hol.BETA.Answer
+    Hol.BETA.Arith
+    Hol.BETA.Compiler
+    Hol.BETA.Constant
+    Hol.BETA.Debugger
+    Hol.BETA.Desugarer
+    Hol.BETA.Diagnostic
+    Hol.BETA.FixityResolver
+    Hol.BETA.HOPU
+    Hol.BETA.Header
+    Hol.BETA.Main
+    Hol.BETA.ModuleLoader
+    Hol.BETA.Notation
+    Hol.BETA.PlanHolLexer
+    Hol.BETA.PlanHolParser
+    Hol.BETA.Runtime
+    Hol.BETA.TermNode
+    Hol.BETA.TypeChecker
+    Hol.V1.Bytecode
+    Hol.V1.Checked
+    Hol.V1.FullBytecode
+    Hol.V1.FullCompiler
+    Hol.V1.FullRuntime
+    Hol.V1.Services
+    Hol.V2.Cache
+    Hol.V2.Constraints
+    Hol.V2.Embedding
+    Hol.V2.Typing
+    Hol.V2.Wire
+    Json.JsonAst
+    Json.JsonLexer
+    Json.JsonParser
+    LoL.Core
+    LoL.Diagnostic
+    LoL.Env
+    LoL.Export.Rocq
+    LoL.Front.Fixity
+    LoL.Front.Grammar
+    LoL.Front.HostLexer
+    LoL.Front.Notation
+    LoL.Front.Parse
+    LoL.Front.Scope
+    LoL.Front.Syntax
+    LoL.Front.Vernac
+    LoL.Hol.Elab
+    LoL.Hol.Embed
+    LoL.Hol.Session
+    LoL.Main
+    LoL.Module
+    LoL.Object
+    LoL.Oracle
+    LoL.Oracle.Guard
+    LoL.Oracle.Tree
+    LoL.Pretty
+    LoL.Proof.Command
+    LoL.Proof.Document
+    LoL.Proof.Executor
+    LoL.Proof.Json
+    LoL.Proof.Main
+    LoL.Proof.Module
+    LoL.Proof.Protocol
+    LoL.Proof.Server
+    LoL.Proof.Session
+    LoL.Proof.View
+    X.Digest
+    X.HigherMachine
+    X.Machine
+    Y.Base
+    Z.Algo.Function
+    Z.Algorithms
+    Z.Doc
+    Z.Hash
+    Z.System
+    Z.System.File
+    Z.Utils
+  include-dirs:
+    src/X
+  includes:
+    machine.h
+    higher_machine.h
+    term.h
+  c-sources:
+    src/X/machine.c
+    src/X/higher_machine.c
+    src/X/term.c
+  cc-options: -O3 -std=c11 -Wall -Wextra
