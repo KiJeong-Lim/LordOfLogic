@@ -18,6 +18,7 @@ import LoL.Front.Vernac (Declare, executeWith)
 import LoL.Hol.Session
 import qualified LoL.Module as Module
 import qualified LoL.Object as Object
+import qualified LoL.ObjectReport as ObjectReport
 import qualified LoL.Pretty as Pretty
 import qualified LoL.Proof.Main as Proof
 import System.Exit (exitFailure)
@@ -63,6 +64,7 @@ data Options
         , optionRocqOuts :: Bool
         , optionRocqPath :: Maybe FilePath
         , optionOnlyCore :: Bool
+        , optionNoAxioms :: Bool
         , optionArtifact :: Maybe FilePath
         , optionResource :: Limits
         , optionMode     :: ExecutionMode
@@ -72,12 +74,13 @@ data Options
 data ExecutionMode = BatchMode | InteractiveMode | ServerMode deriving (Eq, Show)
 
 parseOptions :: [String] -> Either String Options
-parseOptions arguments = foldM option (Options False False False Nothing False Nothing defaultLimits BatchMode) arguments >>= compatible where
+parseOptions arguments = foldM option (Options False False False Nothing False False Nothing defaultLimits BatchMode) arguments >>= compatible where
     option selected argument = case argument of
         "--explicit" -> Right selected { optionExplicit = True }
         "--statements" -> Right selected { optionExplicit = True, optionStated = True }
         "--rocq" -> Right selected { optionRocqOuts = True }
         "--check-only" -> Right selected { optionOnlyCore = True }
+        "--no-axioms" -> Right selected { optionNoAxioms = True }
         "--interactive" -> selectMode InteractiveMode selected
         "--server" -> selectMode ServerMode selected
         _
@@ -110,6 +113,7 @@ parseOptions arguments = foldM option (Options False False False Nothing False N
         | optionMode selected /= BatchMode && optionMode selected /= mode = Left "choose --interactive or --server"
         | otherwise = Right selected { optionMode = mode }
     compatible selected
+        | optionNoAxioms selected && not (optionOnlyCore selected) = Left "--no-axioms requires --check-only"
         | optionMode selected /= BatchMode && (optionOnlyCore selected || optionExplicit selected || optionRocqOuts selected || optionRocqPath selected /= Nothing || optionArtifact selected /= Nothing) = Left "interactive and server modes take resource options only"
         | optionExplicit selected && (optionRocqOuts selected || optionRocqPath selected /= Nothing) = Left "choose --explicit or a Rocq output option"
         | optionOnlyCore selected && (optionExplicit selected || optionRocqOuts selected || optionRocqPath selected /= Nothing || optionArtifact selected /= Nothing) = Left "--check-only takes an object and no source-output option"
@@ -118,11 +122,13 @@ parseOptions arguments = foldM option (Options False False False Nothing False N
 usage :: String
 usage = unlines
     [ "Usage: lol [OPTIONS] FILE.lol"
-    , "       lol --check-only FILE.lolo"
+    , "       lol --check-only [--no-axioms] FILE.lolo"
     , "       lol --interactive [FILE.lol] | lol --server"
     , "  --explicit | --statements     Print checked declarations, with or without theorem proofs."
     , "  --rocq  --rocq-dir=DIR        Print the main Rocq module or write the module tree."
     , "  --emit-object=FILE.lolo       Write a checked LoL object."
+    , "  --check-only                  Report checked declarations and each theorem's assumptions."
+    , "  --no-axioms                   Fail if any checked module declares an axiom."
     , "  --work-limit=N  --timeout-ms=N  --memory-mib=N  --host-allocation-mib=N"
     , "Run from a project root containing the release's lol/hol directory."
     ]
@@ -168,6 +174,10 @@ mainWithArgs arguments = do
                             Proof.loadSource kernel (optionResource options) root path (if optionExplicit options || optionRocqOuts options || optionRocqPath options /= Nothing then const (return ()) else mapM_ putStrLn)
                         case outcome of
                             Left failure -> rejectModule failure
+                            Right loaded | optionOnlyCore options -> do
+                                (report, axioms) <- either abort return (ObjectReport.checkedObject loaded)
+                                mapM_ putStrLn report
+                                when (optionNoAxioms options && axioms) (abort "The checked modules contain axioms (--no-axioms).")
                             Right loaded -> do
                                 explicit <- if optionExplicit options then either (rejectModule . Module.failure path "" origin "I-Output") return ((if optionStated options then Module.statedModule else Module.explicitModule) loaded) else return []
                                 modules <- if optionRocqOuts options || optionRocqPath options /= Nothing then exportModules kernel (optionResource options) loaded >>= either abort return else return Map.empty

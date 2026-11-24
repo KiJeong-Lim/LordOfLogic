@@ -6,7 +6,9 @@ import qualified Data.Set as Set
 import qualified LoL.Core as Core
 import LoL.Diagnostic
 import qualified LoL.Env as Env
+import qualified LoL.Front.ArgumentScopes as ArgScopes
 import qualified LoL.Front.Fixity as Fixity
+import qualified LoL.Front.Search as Search
 import qualified LoL.Hol.Elab as Elab
 import LoL.Front.Scope
 import LoL.Front.Syntax
@@ -60,6 +62,24 @@ executeWith = executeWithDisplay id
 -- Display names may include dependencies that are deliberately out of scope.
 -- They are used only by renderers, never by rewriting or admission.
 executeWithDisplay :: (Env.Env -> Env.Env) -> Declare -> Kernel -> Limits -> Env.Env -> Command -> IO (Either Diagnostic (Env.Env, [String]))
+executeWithDisplay forDisplay declare kernel limits env (CWhere at inner interpretations) = case owners inner of
+    [] -> return (Left (Diagnostic at "LoL-ScopeError" "H-Notation" "A where notation requires an inductive or a fixpoint." []))
+    members -> do
+        let prepare = foldM (Fixity.configureBlock (Set.fromList members)) env interpretations
+        case prepare >>= flip rewriteCommand inner of
+            Left failure -> return (Left failure)
+            Right checkedSyntax -> do
+                admitted <- executePreparedWithDisplay forDisplay declare kernel limits env checkedSyntax
+                return $ do
+                    (next, messages) <- admitted
+                    final <- foldM Fixity.configure next interpretations
+                    Right (final, messages)
+    where
+        owners (CInductive _ fs) = concat [nameText n : [nameText c | Constructor _ c _ <- cs] | IndBody _ n _ _ cs <- fs]
+        owners (CFixpoint _ fs) = [nameText n | FixBody _ n _ _ _ _ <- fs]
+        owners (CUniverses _ _ inner') = owners inner'
+        owners (CTemplate _ inner') = owners inner'
+        owners _ = []
 executeWithDisplay forDisplay declare kernel limits env written = case rewriteCommand env written of
     Left problem -> return (Left problem)
     Right command -> executePreparedWithDisplay forDisplay declare kernel limits env command
@@ -157,11 +177,15 @@ executePreparedMode elaborate forDisplay declare kernel limits env command = cas
                 _ -> return (Left (unsupported at "malformed elaborated fix"))
         | otherwise -> tryProposal (admit env (declarations env command))
     CArguments {} -> fmap (fmap (\next -> (next, []))) (Fixity.configureWith kernel limits env command)
+    CSelectNotation {} -> return ((\next -> (next, [])) <$> Fixity.configure env command)
+    CScope {} -> return ((\next -> (next, [])) <$> Fixity.configure env command)
+    CRocqNotation {} -> return ((\next -> (next, [])) <$> Fixity.configure env command)
     CNotation {} -> return ((\next -> (next, [])) <$> Fixity.configure env command)
     CInfix {} -> return ((\next -> (next, [])) <$> Fixity.configure env command)
     CNumerals {} -> return ((\next -> (next, [])) <$> Fixity.configure env command)
     CCheck _ source -> query Env.shownType Env.shownTypeWithUniverses source
     CCompute _ source -> query Env.normalForm Env.normalFormWithUniverses source
+    CSearch at items scope -> fmap (fmap ((,) env)) (Search.search (refusalIn (forDisplay env) at) kernel limits env (forDisplay env) Core.emptyUniverses [] at items scope)
     CPrint _ name -> printed ((: []) <$> named name)
     CPrintAssumptions _ name -> fmap (fmap (\(_, rendered) -> (env, if null rendered then ["(* No assumptions. *)"] else rendered))) (printed ((\(constant, _) -> [(assumed, entry) | assumed <- Set.toAscList (Env.assumptions env constant), Just entry <- [Map.lookup assumed (Env.envDecls env)]]) <$> named name))
     _ -> return (Left (unsupported position (commandKind command)))
@@ -266,7 +290,7 @@ executePreparedMode elaborate forDisplay declare kernel limits env command = cas
             Left failure -> return (Left failure)
             Right entries -> do
                 shown <- mapM (\(constant, entry) -> (,) constant <$> Env.visibleEntry kernel limits env entry) entries
-                return ((,) env <$> mapM (\(constant, entry) -> printable (Pretty.declaration (forDisplay env) constant entry)) shown)
+                return ((,) env <$> mapM (\(constant, entry) -> printable (Pretty.displayDeclaration (forDisplay env) constant entry)) shown)
         universeCommand context inner = case inner of
             CDefinition at kind name binders annotation body -> do
                 proposed <- Elab.proposeUniversesDisplaying forDisplay kernel limits env context (Just (Term at (SForall binders annotation))) (Term at (SLambda binders body))
@@ -319,7 +343,7 @@ executePreparedMode elaborate forDisplay declare kernel limits env command = cas
                         return $ case answer of
                             Left rejected -> Left (refusalIn (forDisplay env) (termSpan source) rejected)
                             Right output -> do
-                                rendered <- printable (Pretty.termWithUniverses (forDisplay env) context output)
+                                rendered <- printable (Pretty.displayTermWithUniverses (forDisplay env) context output)
                                 return (env, [rendered])
             | needsProposal source = do
                 proposed <- Elab.proposeDisplaying forDisplay kernel limits env Nothing source
@@ -336,7 +360,7 @@ executePreparedMode elaborate forDisplay declare kernel limits env command = cas
             return $ case answer of
                 Left rejected -> Left (refusalIn (forDisplay env) (termSpan source) rejected)
                 Right output -> do
-                    rendered <- printable (Pretty.term (forDisplay env) output)
+                    rendered <- printable (Pretty.displayTerm (forDisplay env) output)
                     return (env, [rendered])
         indNeeded (IndBody at _ binders arity constructors) = needsProposal (Term at (SForall binders arity)) || any (\(Constructor place _ signature) -> needsProposal (Term place (SForall binders signature))) constructors
         inductiveProposal bodies = do
@@ -491,8 +515,11 @@ rewriteCommand env command = case command of
     COrdinaryRecord at fields inner -> COrdinaryRecord at fields <$> rewriteCommand env inner
     CPrimitive at eta fields inner -> CPrimitive at eta fields <$> rewriteCommand env inner
     CUniverses at context inner -> CUniverses at context <$> rewriteCommand env inner
-    CDefinition at kind name binders annotation body -> CDefinition at kind name <$> mapM binder binders <*> term annotation <*> term body
-    CAxiom at name annotation -> CAxiom at name <$> term annotation
+    CDefinition at kind name binders annotation body -> do
+        (parameters, local) <- Fixity.rewriteBinders env binders
+        typ <- Fixity.rewriteAt local (ArgScopes.classScopes local SortClass) annotation
+        CDefinition at kind name parameters typ <$> Fixity.rewriteAt local (ArgScopes.expected local typ) body
+    CAxiom at name annotation -> CAxiom at name <$> Fixity.rewriteAt env (ArgScopes.classScopes env SortClass) annotation
     CCheck at source -> CCheck at <$> term source
     CCompute at source -> CCompute at <$> term source
     CInductive at bodies -> CInductive at <$> mapM inductive bodies

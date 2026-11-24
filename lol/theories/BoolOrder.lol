@@ -52,18 +52,31 @@ Theorem leb_false_complete : forall n m : nat, lt m n -> Is_true (negb (leb n m)
         | S q => fun h => go p q (le_succ_inv (S q) p h)
         end
     end.
-Theorem leb_true_iff : forall n m : nat, iff (Is_true (leb n m)) (le n m) :=
-    fun n m => conj (Is_true (leb n m) -> le n m) (le n m -> Is_true (leb n m))
-        (leb_true_sound n m) (leb_true_complete n m).
+Theorem leb_true_iff : forall n m : nat, iff (Is_true (leb n m)) (le n m).
+Proof.
+    intros n m.
+    split.
+    - exact (leb_true_sound n m).
+    - exact (leb_true_complete n m).
+Qed.
 Theorem leb_false_iff : forall n m : nat, iff (Is_true (negb (leb n m))) (lt m n) :=
     fun n m => conj (Is_true (negb (leb n m)) -> lt m n) (lt m n -> Is_true (negb (leb n m)))
         (leb_false_sound n m) (leb_false_complete n m).
-Theorem ltb_true_sound : forall n m : nat, Is_true (ltb n m) -> lt n m :=
-    fun n m => leb_true_sound (S n) m.
-Theorem ltb_true_complete : forall n m : nat, lt n m -> Is_true (ltb n m) :=
-    fun n m => leb_true_complete (S n) m.
-Theorem ltb_true_iff : forall n m : nat, iff (Is_true (ltb n m)) (lt n m) :=
-    fun n m => leb_true_iff (S n) m.
+Theorem ltb_true_sound : forall n m : nat, Is_true (ltb n m) -> lt n m.
+Proof.
+    intros n m.
+    exact (leb_true_sound (S n) m).
+Qed.
+Theorem ltb_true_complete : forall n m : nat, lt n m -> Is_true (ltb n m).
+Proof.
+    intros n m.
+    exact (leb_true_complete (S n) m).
+Qed.
+Theorem ltb_true_iff : forall n m : nat, iff (Is_true (ltb n m)) (lt n m).
+Proof.
+    intros n m.
+    exact (leb_true_iff (S n) m).
+Qed.
 Theorem leb_spec : forall n m : nat, match leb n m return Prop with | true => le n m | false => lt m n end :=
     fun n m => (match leb n m as b return
         (Is_true b -> le n m) -> (Is_true (negb b) -> lt m n) ->

@@ -1,7 +1,7 @@
 module LoL.Proof.Document where
 
 import Control.Exception (IOException, mask, onException, try)
-import Control.Monad (filterM)
+import Control.Monad (filterM, foldM, when)
 import Data.IORef
 import Data.List (find, foldl')
 import Data.Word (Word64)
@@ -11,20 +11,25 @@ import qualified Hol.V2.Embedding as Hol
 import qualified LoL.Core as Core
 import LoL.Diagnostic
 import qualified LoL.Env as Env
+import qualified LoL.Front.ArgumentScopes as ArgScopes
 import qualified LoL.Front.Scope as Scope
+import qualified LoL.Front.Search as Search
 import qualified LoL.Front.Parse as Front
 import qualified LoL.Front.Syntax as Front
 import qualified LoL.Front.Vernac as Vernac
 import qualified LoL.Hol.Elab as Elab
-import LoL.Hol.Embed (numberHoles, termType)
-import LoL.Hol.Session (defaultLimits, Kernel (kernelTypes), Limits (..), closeKernel, loadKernel, loadProofProgram)
+import LoL.Hol.Embed (Report (..), ReportValue (..), numberHoles, recoverReport, termType)
+import LoL.Hol.Session (defaultLimits, Kernel (kernelTypes, kernelBundled), Limits (..), closeKernel, loadKernel, loadProofProgram)
 import qualified LoL.Module as Module
+import qualified LoL.ImportCache as Cache
+import qualified LoL.Object as Object
 import qualified LoL.Pretty as Pretty
 import qualified LoL.Proof.Command as Command
 import qualified LoL.Proof.Module as ModuleState
 import qualified LoL.Proof.Session as Proof
 import System.Directory (canonicalizePath)
 import System.FilePath ((</>), isAbsolute, makeRelative)
+import System.Timeout (timeout)
 
 data ProofHandle
     = ProofHandle
@@ -95,6 +100,7 @@ data Document
         , documentDefault         :: Maybe Kernel
         , documentPrograms        :: Map.Map Integer Kernel
         , documentRetiredPrograms :: [Kernel]
+        , documentCacheInputs     :: Maybe Cache.Inputs
         , documentBudget          :: Word64
         }
     deriving ()
@@ -117,7 +123,7 @@ newBatchDocument :: FilePath -> FilePath -> String -> Document
 newBatchDocument = newDocumentWith Nothing
 
 newDocumentWith :: Maybe Kernel -> FilePath -> FilePath -> String -> Document
-newDocumentWith program root path source = Document root path source source initial [] 1 Map.empty [] [(name, path)] program Map.empty [] 0 where
+newDocumentWith program root path source = Document root path source source initial [] 1 Map.empty [] [(name, path)] program Map.empty [] Nothing 0 where
     name = Module.moduleIdentity root path
     initial = Checkpoint 0 (ModuleState.emptyModule name) Nothing program 0 0 (1, 1) Nothing
 
@@ -333,17 +339,28 @@ universesShown state view = case Proof.proofRecorded view of
 
 execute :: Kernel -> Limits -> Integer -> Command.Command -> String -> Document -> IO Reply
 execute base limits request command source document = case command of
+    Command.Ordinary (Front.CSearch at items scope)
+        | Just pending <- checkpointProof current -> do
+            let view = pendingView pending
+                display = ModuleState.displayEnvironment state env
+                inspect binding = (Proof.localName binding, Proof.localType binding >>= either (const Nothing) Just . Proof.inspectTerm view)
+                locals = map inspect (Proof.proofLocals view)
+            result <- Search.search (Vernac.refusalIn display at) base limits env display (Proof.proofUniverses view) locals at items scope
+            case result of
+                Left failure -> return (Reply document [] (Just (Module.ambiguous (Module.scopeCanonical (ModuleState.moduleScope state)) failure)) False)
+                Right messages -> done False current messages
     Command.Ordinary ordinary
         | Just _ <- checkpointProof current, not (query ordinary) -> return (bad "P-InProof" "Finish or abort the proof before changing declarations.")
         | otherwise -> do
             result <- ModuleState.executeWith (loadImport base limits document) base limits state ordinary
             case result of
                 Left failure -> return (Reply document [] (Just failure) False)
+                Right (_, messages) | Just _ <- checkpointProof current, query ordinary -> done False current messages
                 Right (next, messages) -> do
                     case ordinary of
                         Front.CImport {} -> return ()
                         _ -> extendProgram next
-                    done (not (query ordinary)) current { checkpointModule = next } messages
+                    done (not (query ordinary) || Env.syntaxObserved (ModuleState.moduleSyntax state) /= Env.syntaxObserved (ModuleState.moduleSyntax next)) current { checkpointModule = next } messages
     Command.TheoremHeader position header
         | Just _ <- checkpointProof current -> return (bad "P-InProof" "A proof is already active.")
         | otherwise -> case ModuleState.namesAvailable state position (Module.commandNames header) >> Vernac.rewriteCommand env header of
@@ -362,11 +379,12 @@ execute base limits request command source document = case command of
                             case prepared of
                                 Left message -> return (bad "P-Tactics" message)
                                 Right (ready, program) -> do
+                                    when (kernelBundled program) (Cache.sawProgram (documentCacheInputs document) "lol/hol/tactics.hol" program)
                                     let release = mapM_ closeKernel (Map.elems (Map.difference (documentPrograms ready) (documentPrograms document)))
                                     budget <- remainingLimits limits ready Nothing
                                     started <- case budget of
                                         Left message -> return (Left (Proof.ProofRuntimeFailure message))
-                                        Right available -> restore (Proof.startProofWithStatement base program available env named statement [if Front.nameText name == "_" then "" else Front.nameText name | binder <- parameters, name <- Front.binderVars binder]) `onException` release
+                                        Right available -> restore (Proof.startSectionProof base program available env named statement [if Front.nameText name == "_" then "" else Front.nameText name | binder <- parameters, name <- Front.binderVars binder] (Map.keys (ModuleState.contextVariables state))) `onException` release
                                     case started of
                                         Left failure@(Proof.ProofResourceFailure _) -> release >> return (bad "R5" (Proof.describeProofFailure failure))
                                         Left failure -> release >> return (bad "P-Runtime" (Proof.describeProofFailure failure))
@@ -384,7 +402,7 @@ execute base limits request command source document = case command of
                                                 stable = maybe (Set.fromList [index | (kind, Core.Parameter index) <- marks, kind == 1 || kind >= 6] == Set.fromList [0 .. length (Core.universeNames original) - 1]) (const True) context
                                                 pending = Pending written handle view expected context marks original (completed && stable) []
                                                 registered = ready { documentHandles = Map.insert (handleIdentity handle) handle (documentHandles ready) }
-                                            commit True (consumed source (documentCurrent ready) { checkpointProof = Just pending }) registered [] `onException` (Proof.closeProof session >> release)
+                                            commit True (consumed source (documentCurrent ready) { checkpointModule = ModuleState.observe env (ArgScopes.commandLookups env header) state, checkpointProof = Just pending }) registered [] `onException` (Proof.closeProof session >> release)
     Command.ProofStart _ -> case checkpointProof current of
         Nothing -> return (bad "P-NoProof" "There is no active proof.")
         Just _ -> done False current []
@@ -395,7 +413,7 @@ execute base limits request command source document = case command of
     Command.QedProof _ -> case checkpointProof current of
         Nothing -> return (bad "P-NoProof" "There is no active proof.")
         Just pending -> case Proof.completedTheorem (pendingView pending) of
-            Left rules -> return (bad (concat (take 1 rules ++ ["P-Universes" | null rules])) (Proof.describeUnsettled rules))
+            Left rules -> return (qedRefusal pending rules)
             Right Nothing -> return (bad "P-RemainingGoals" "The proof still has unresolved goals or constraints.")
             -- A proof program answers with a theorem: it is the written one
             -- with its universes settled, or it is none.
@@ -411,7 +429,7 @@ execute base limits request command source document = case command of
                         Left failure -> return (Reply document [] (Just failure) False)
                         Right next -> do
                             extendProgram next
-                            done True current { checkpointModule = next, checkpointProof = Nothing } ["The theorem was admitted."]
+                            done True current { checkpointModule = next, checkpointProof = Nothing } ["The theorem was accepted."]
     Command.AbortProof _ -> case checkpointProof current of
         Nothing -> return (bad "P-NoProof" "There is no active proof.")
         Just _ -> done True current { checkpointProof = Nothing } ["The proof was aborted."]
@@ -424,6 +442,7 @@ execute base limits request command source document = case command of
                 Right program
                     | Map.lookup (Hol.DC_Named "p_universe_statement") (kernelTypes program) /= Just statementEntry -> closeKernel program >> return (bad "P-Tactics" "The tactic program must declare p_universe_statement with the signature in lol/hol/proof.hol.")
                     | otherwise -> do
+                        Cache.sawProgram (documentCacheInputs document) (if isAbsolute path then path else documentRoot document </> path) program
                         let identity = documentNext document
                             registered = document { documentPrograms = Map.insert identity program (documentPrograms document) }
                             next = consumed source current { checkpointProgram = Just program, checkpointProgramId = identity }
@@ -440,6 +459,18 @@ execute base limits request command source document = case command of
         env = ModuleState.environment state
         position = Command.commandSpan command
         bad = refused document position
+        qedRefusal pending rules = case [report | Right report <- map recoverReport (Proof.proofReports (pendingView pending))] of
+            report : _
+                | reportRule report == code
+                , [Just (ReportConstraint _ _ _)] <- reportCore report ->
+                    let details = reportTermsAt env (Core.universeNames (pendingOriginal pending)) report
+                    in plain { replyFailure = fmap (\failure -> failure { diagnosticBody = details }) (replyFailure plain) }
+            _ -> plain
+            where
+                code = case rules of
+                    first : _ -> first
+                    [] -> "P-Universes"
+                plain = bad code (Proof.describeUnsettled rules)
         -- Reuse a closed, monomorphic statement only after its judgment in
         -- the kernel. A custom proof program still receives its written raw
         -- syntax. The builtin entry rechecks the core term under its oracle.
@@ -493,6 +524,7 @@ execute base limits request command source document = case command of
         query ordinary = case ordinary of
             Front.CCheck {} -> True
             Front.CCompute {} -> True
+            Front.CSearch {} -> True
             Front.CPrint {} -> True
             Front.CPrintAssumptions {} -> True
             _ -> False
@@ -696,30 +728,102 @@ failedWorker position pending failure document = case failure of
 -- identities but a fresh lexical scope and the default tactic program.
 loadImport :: Kernel -> Limits -> Document -> Module.Loaded -> String -> IO (Either Module.Failure Module.Loaded)
 loadImport base limits parent loaded name = do
-    paths <- try ((,) <$> canonicalizePath (documentRoot parent) <*> canonicalizePath requested) :: IO (Either IOException (FilePath, FilePath))
-    case paths of
-        Left problem -> return (Left (Module.inputFailure requested problem))
-        Right (root, path)
-            | not (Module.inside (makeRelative root path)) -> return (Left (bad path "I-Root" "An imported module resolves outside the project root."))
-            | name `elem` map fst active || path `elem` map snd active -> return (Left (bad path "I-Cycle" "The import reaches a module that is already being executed."))
-            | Just unit <- Map.lookup name (Module.loadedUnits loaded) -> return $ if Module.unitPath unit == path then Right loaded else Left (bad path "I-ModuleName" "Two files have the same module name.")
-            | otherwise -> do
-                input <- Module.readSource path
-                case input of
-                    Left problem -> return (Left (Module.inputFailure path problem))
-                    Right source -> do
-                        scoped <- Module.universeView loaded [] []
-                        let fresh = newDocumentWith (documentDefault parent) root path source
-                            initial = documentCurrent fresh
-                            state = (ModuleState.emptyModule name) { ModuleState.moduleLoaded = loaded { Module.loadedMain = name, Module.loadedEnv = scoped } }
-                            child = fresh { documentCurrent = initial { checkpointModule = state }, documentAncestors = (name, path) : active }
-                        budget <- remainingLimits limits parent Nothing
-                        case budget of
-                            Left message -> return (Left (bad path "P-ProofBudget" message))
-                            Right available -> do
-                                result <- runDocument base available child (const (return ()))
-                                return (fmap (\next -> next { Module.loadedMain = Module.loadedMain loaded }) result)
+    result <- load
+    case result of
+        Right next | Just unit <- Map.lookup name (Module.loadedUnits next) -> Cache.sawImport (documentCacheInputs parent) unit
+        _ -> return ()
+    return result
     where
+        load = do
+            paths <- try ((,) <$> canonicalizePath (documentRoot parent) <*> canonicalizePath requested) :: IO (Either IOException (FilePath, FilePath))
+            case paths of
+                Left problem -> return (Left (Module.inputFailure requested problem))
+                Right (root, path)
+                    | not (Module.inside (makeRelative root path)) -> return (Left (bad path "I-Root" "An imported module resolves outside the project root."))
+                    | name `elem` map fst active || path `elem` map snd active -> return (Left (bad path "I-Cycle" "The import reaches a module that is already being executed."))
+                    | Just unit <- Map.lookup name (Module.loadedUnits loaded) -> if Module.unitPath unit == path then validateCaptured root unit else return (Left (bad path "I-ModuleName" "Two files have the same module name."))
+                    | otherwise -> do
+                        input <- Module.readSource path
+                        case input of
+                            Left problem -> return (Left (Module.inputFailure path problem))
+                            Right source -> do
+                                budget <- remainingLimits limits parent Nothing
+                                case budget of
+                                    Left message -> return (Left (bad path "P-ProofBudget" message))
+                                    Right available -> importSource root path source available
+        -- A diamond may meet a module already admitted in this document.
+        -- Only reuse the earlier identities if their source closure still
+        -- resolves to the exact files and revisions it captured.
+        validateCaptured root unit = do
+            checked <- visit Set.empty [unit]
+            return (loaded <$ checked)
+            where
+                visit _ [] = return (Right ())
+                visit seen (current : rest)
+                    | Set.member key seen = visit seen rest
+                    | otherwise = case traverse pinned (Object.objectImports (Module.unitObject current)) of
+                        Nothing -> return conflict
+                        Just children -> case Module.unitSource current of
+                            -- Explicit .lolo graphs already attest and check
+                            -- their imports without requiring a source tree.
+                            Nothing -> descend children
+                            Just expected -> do
+                                resolved <- try (canonicalizePath (Module.modulePath root key)) :: IO (Either IOException FilePath)
+                                case resolved of
+                                    Right actual | actual == Module.unitPath current -> do
+                                        source <- Module.readSource actual
+                                        case source of
+                                            Right text | text == expected -> descend children
+                                            _ -> return conflict
+                                    _ -> return conflict
+                    where
+                        key = Module.unitName current
+                        conflict = Left (bad (Module.unitPath current) "I-VersionConflict" ("An already admitted module or its pinned dependency changed: " ++ key))
+                        descend children = visit (Set.insert key seen) (children ++ rest)
+                        pinned (dependency, digest) = case Map.lookup dependency (Module.loadedUnits loaded) of
+                            Just child | Module.unitDigest child == digest -> Just child
+                            _ -> Nothing
+        importSource root path source available = do
+            let child = (newDocumentWith (documentDefault parent) root path source) { documentAncestors = (name, path) : active }
+                restoreMain result = result { Module.loadedMain = Module.loadedMain loaded }
+                execute storage = do
+                    tracker <- traverse (const Cache.newInputs) storage
+                    scoped <- Module.universeView loaded [] []
+                    let initial = documentCurrent child
+                        state = (ModuleState.emptyModule name) { ModuleState.moduleLoaded = loaded { Module.loadedMain = name, Module.loadedEnv = scoped } }
+                        fresh = child { documentCurrent = initial { checkpointModule = state }, documentCacheInputs = tracker }
+                    result <- runDocument base available fresh (const (return ()))
+                    case (storage, tracker, result) of
+                        (Just target, Just seen, Right next) | Just unit <- Map.lookup name (Module.loadedUnits next) -> Cache.writeEntry target seen unit
+                        _ -> return ()
+                    return (fmap restoreMain result)
+                dependency Nothing _ = return Nothing
+                dependency (Just previous) (imported, pin) = do
+                    checked <- loadImport base available child previous imported
+                    return $ case checked of
+                        Right next | Just unit <- Map.lookup imported (Module.loadedUnits next), Module.unitDigest unit == pin -> Just next
+                        _ -> Nothing
+                tryCached target = do
+                    cached <- Cache.readEntry target name
+                    case cached of
+                        Nothing -> return Nothing
+                        Just object -> do
+                            dependencies <- foldM dependency (Just loaded) (Object.objectImports object)
+                            case dependencies of
+                                Nothing -> return Nothing
+                                Just ready -> do
+                                    verdict <- Module.replayImport base available path (Just source) object (Object.fingerprint object) ready
+                                    return (either (const Nothing) Just verdict)
+            storage <- Cache.location base (documentDefault parent) available root path source
+            -- A bad/stale packet may require many small kernel judgments.
+            -- Bound the whole speculative branch as well as each judgment;
+            -- source fallback starts from the original immutable environment.
+            checked <- case storage of
+                Nothing -> return Nothing
+                Just target -> timeout (limitMicros available) (tryCached target)
+            case checked of
+                Just (Just next) -> Cache.hit name >> return (Right (restoreMain next))
+                _ -> execute storage
         requested = Module.modulePath (documentRoot parent) name
         active = documentAncestors parent
         bad path code message = Module.failure path "" Module.origin code message

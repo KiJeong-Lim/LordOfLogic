@@ -6,6 +6,7 @@ import Data.List (foldl')
 import LoL.Core (Global)
 import qualified LoL.Front.Grammar as Grammar
 import qualified LoL.Front.HostLexer as Host
+import qualified LoL.Front.RocqNotation as RocqNotation
 import qualified LoL.Front.Notation as Notation
 import LoL.Front.Syntax
 
@@ -76,7 +77,7 @@ parsedAtWith = parsedAtIndexed . Notation.fromRules
 
 parsedAtIndexed :: Notation.Rules -> Position -> String -> Either FrontError (Either Term [Command])
 parsedAtIndexed rules origin source = do
-    tokens <- lexAt origin source
+    tokens <- branching <$> Host.lexHostWith (Notation.termLiterals rules) origin source
     let end = foldl' advance origin source
     first (parseError (Span end end)) (readTokens rules tokens)
 
@@ -102,8 +103,38 @@ parseTokensIndexed rules = first Grammar.problemToken . readTokens rules
 
 readTokens :: Notation.Rules -> [Token] -> Either Grammar.Problem (Either Term [Command])
 readTokens rules tokens
+    | start : _ <- tokens, (loc, rest@(mark : _)) <- RocqNotation.splitLocal tokens, loc /= DefaultSyntax, tokenText mark == "Arguments" = do
+        parsed <- readTokens rules rest
+        case parsed of
+            Right [CArguments pos name args opts] -> Right (Right [CSetArguments (tokenSpan start <> pos) loc name args opts])
+            _ -> Left (Grammar.Unexpected (Just mark))
+    | firstToken : _ <- tokens, tokenText firstToken `elem` ["Inductive","Fixpoint","Polymorphic","#["], tokenKind (last tokens) == "."
+    , (prefix, clauses@(_:_)) <- splitWhere tokens = do
+        parsed <- readTokens rules (prefix ++ [last tokens])
+        case parsed of
+            Right [base] -> do
+                interpretations <- mapM (first Grammar.Unexpected . RocqNotation.declaration rules) clauses
+                Right (Right [CWhere (tokenSpan firstToken <> tokenSpan (last tokens)) base interpretations])
+            _ -> Left (Grammar.Unexpected (Just firstToken))
+    | first : _ <- tokens, tokenKind first == "ident", tokenText first == "Search", tokenKind (last tokens) == "." = Right . pure <$> Grammar.searchCommand (termGrammar rules tokens) tokens
+    | RocqNotation.handles rules tokens = first Grammar.Unexpected (Right . (: []) <$> RocqNotation.declaration rules tokens)
     | Notation.isDeclaration tokens, not (null tokens), tokenKind (last tokens) == "." = first Grammar.Unexpected (Right . (: []) <$> Notation.declaration tokens)
     | otherwise = ordinaryWith Grammar.Unexpected (Grammar.readRaw (termGrammar rules tokens)) tokens
+
+-- A where/and clause begins with a quoted notation and :=. A variable
+-- named where or and in a declaration is therefore not a clause delimiter.
+splitWhere :: [Token] -> ([Token], [[Token]])
+splitWhere input = case split "where" input of
+    (pre, mark:rest) -> (pre, clauses mark rest)
+    (_, []) -> (input, [])
+    where
+        split _ [] = ([],[])
+        split word allTokens@(t:s:a:_) | tokenText t == word, tokenKind s == "string", tokenKind a == ":=" = ([],allTokens)
+        split word (t:rest) = let (pre,post) = split word rest in (t:pre,post)
+        clauses mark rest = case split "and" rest of
+            (body,[]) -> [header mark : body]
+            (body,next:tail') -> (header mark : body ++ [last input]) : clauses next tail'
+        header t = t { tokenKind = "ident", tokenText = "Notation" }
 
 termGrammar :: Notation.Rules -> [Token] -> Grammar.Grammar
 termGrammar rules tokens
@@ -116,8 +147,14 @@ termGrammar rules tokens
 parseOrdinary :: ([Token] -> Either (Maybe Token) (Either Term [Command])) -> [Token] -> Either (Maybe Token) (Either Term [Command])
 parseOrdinary = ordinaryWith id
 
+sectionHead :: Token -> Bool
+sectionHead token = tokenKind token == "ident" && tokenText token `elem` ["Section", "End", "Context", "Variable", "Variables", "Hypothesis", "Hypotheses"]
+
 ordinaryWith :: (Maybe Token -> e) -> ([Token] -> Either e (Either Term [Command])) -> [Token] -> Either e (Either Term [Command])
 ordinaryWith unexpected parseRaw tokens = case tokens of
+    first : rest
+        | sectionHead first, tokenKind (last tokens) == "." ->
+            parseRaw (first { tokenKind = "section-command" } : rest)
     first : _
         | tokenKind first == "#[" -> attributes first False False tokens
     first : _
@@ -209,6 +246,7 @@ commandChunks source = scan (1, 1) (1, 1) Plain (0 :: Int) source source where
     scan start _ _ size begin [] = [(start, begin) | size > 0]
     scan start position Plain size begin ('(' : '*' : more) = step start (advance (advance position '(') '*') Comment (size + 2) begin more
     scan start position Comment size begin ('*' : ')' : more) = step start (advance (advance position '*') ')') Plain (size + 2) begin more
+    scan start position Plain size begin ('.' : '.' : more) = step start (advance (advance position '.') '.') Plain (size + 2) begin more
     scan start position mode size begin (character : more)
         | mode == Plain && character == '.' && maybe True sourceSpace (first more) = (start, take (size + 1) begin) : step next next Plain 0 more more
         | otherwise = step start next following (size + 1) begin more

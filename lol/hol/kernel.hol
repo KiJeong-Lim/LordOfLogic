@@ -125,13 +125,31 @@ kind report type.
 
 % rep L Ts: the rule labelled L rejects; Ts are the terms involved.
 type rep (string -> list tm -> report).
+% Some failures under the same rule have different operands. Identify the
+% premise that failed while it is still available to the judgment.
+type rep_fields (string -> list string -> list tm -> report).
+type report_descriptions o.
+type report_fields (o -> string -> list string -> o).
+type report_terms (o -> string -> list string -> list tm -> o).
+report_terms G L Prefix Ts :- report_descriptions, report_fields G L Fields, !,
+    rev Prefix Fields Names, print (rep_fields L Names Ts).
+report_terms G L Prefix Ts :- print (rep L Ts).
+report_fields (is_sort W) R ["term", "has type"].
+report_fields (match_head H B I U) "T-Match" ["declared match family"].
+report_fields (G = ind B I U, template_match_instance B UV U) "T-Match" ["scrutinee", "has type"].
+report_fields (ind_info B I U N E Ms) "T-Match" ["inductive family"].
+report_fields (params Qs Ps) "T-Match" ["declared match family", "scrutinee type"].
+report_fields (conv_all Qs Ps) "T-Match" ["declared match family", "scrutinee type"].
+report_fields (ret_sort AT F P S) "T-Match" ["return predicate"].
+report_fields (Br = abs F) "T-Match" ["branch"].
+report_fields (H = ind B I UW, u_equal_all UV UW) "I-Con" ["constructor result"].
 
 type expect (o -> report -> o).
 
 expect G R :- G, !.
 % The terms of a report are those that the host shows (shown): the type of a
 % `let` is in them when it is a proposition.
-expect G (rep L Ts) :- shown_all Ts Ns, !, print (rep L Ns), fail.
+expect G (rep L Ts) :- shown_all Ts Ns, !, report_terms G L [] Ns, fail.
 expect G R :- print R, fail.
 
 % ------------------------------------------------------------------------------
@@ -419,7 +437,9 @@ infer (cas F P T Bs) A :- !,
     expect (elim_at E S) (rep "I-Elim-Prop" (ind B I UV :: S :: [])),
     branches B I UV 0 N Ps P Ms Bs,
     ret_type P Vs T A.
-% a binder of a match where no match has it
+% A surplus binder may belong to a return predicate or a branch.
+infer (abs F) A :- report_descriptions, !, shown (abs F) T,
+    print (rep_fields "T-Match" ["unexpected match binder"] [T]), fail.
 infer (abs F) A :- !, expect fail (rep "T-Match" (abs F :: [])).
 % [T-Fix]: (F-Type) with (F-Struct), (F-Body), (F-Guard), and the type F_k
 infer (fix K Ns Fs Ts) A :- !,
@@ -474,6 +494,8 @@ branches B I UV J N Qs P (M :: Ms) (Br :: Bs) :- !,
     con_type B I J UV CT, inst CT Qs T, apps (con B I J UV) Qs C,
     branch N T C P Br,
     branches B I UV (s J) N Qs P Ms Bs.
+branches B I UV J N Qs P (M :: Ms) [] :- report_descriptions, !,
+    print (rep_fields "T-Match" ["missing branch for constructor"] [con B I J UV]), fail.
 branches B I UV J N Qs P Ms Bs :- expect fail (rep "T-Match" Bs).
 
 % (M-Branch): a branch binds the arguments of its constructor, and its body

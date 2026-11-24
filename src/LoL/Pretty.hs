@@ -9,6 +9,13 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import LoL.Core
 import qualified LoL.Env as Env
+import qualified LoL.Front.ArgumentScopes as ArgumentScopes
+import qualified LoL.Front.Format as Format
+import qualified LoL.Front.Template as Template
+import qualified LoL.Front.HostLexer as HostLexer
+import qualified LoL.Front.Syntax as Syntax
+import qualified LoL.Front.Unnotation as Unnotation
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 
 -- The keywords of Rocq 9.2.0 under -noinit, as its Print Keywords lists them,
 -- and Inline, which Axiom reads as an option of its own.
@@ -20,10 +27,8 @@ keywords = Set.fromList (words "Arguments Axiom Check Compute Definition Fixpoin
 
 identifier :: String -> Bool
 identifier name = name /= "_" && Set.notMember name keywords && case name of
-    first : rest -> (letter first || first == '_') && all (\ch -> letter ch || isDigit ch || ch == '_' || ch == '\'') rest
+    first : rest -> HostLexer.identStart first && all HostLexer.identContinue rest
     [] -> False
-    where
-        letter ch = isAsciiLower ch || isAsciiUpper ch
 
 qualified :: String -> Bool
 qualified name = all identifier (components name) where
@@ -47,10 +52,13 @@ data Piece
     = Piece
         { pieceRank :: Int
         , pieceFree :: IntSet.IntSet
-        , pieceText :: ShowS
+        , pieceDoc  :: Format.Doc
         , pieceUniv :: Integer
         }
     deriving ()
+
+pieceText :: Piece -> ShowS
+pieceText = Format.output . pieceDoc
 
 -- Rocq: every product is a forall, and a sort is Set or a named universe.
 data Style
@@ -219,7 +227,9 @@ levelText style names level = combine (parts 0 level) where
         | number == 0 = showString "Set"
         | otherwise = showChar 'L' . shows number
     atom (DefaultLevel owner slot) = showString (maybe "unknown" id (namingGlobal names (GlobalInd owner 0))) . showChar '.' . showString (maybe ("u" ++ show slot) id (lookup slot (zip [0 ..] (templateHints style (namingLevelHints names owner)))))
-    atom (Parameter index) = showString (namingUniverses names !! index)
+    atom (Parameter index) = showString (case drop index (namingUniverses names) of
+        hint : _ | index >= 0 -> hint
+        _ -> "u" ++ show index)
     atom _ = id
     combine [] = id
     combine [single] = single
@@ -282,9 +292,19 @@ universeRelation style names constraint = case constraint of
             _ -> level
 
 termWithUniverses :: Env.Env -> UniverseContext -> Term -> Either String String
-termWithUniverses env context value = do
+termWithUniverses env = renderUniverses env (printerOf Surface)
+
+displayTerm :: Env.Env -> Term -> Either String String
+displayTerm env = displayTermWithUniverses env emptyUniverses
+
+displayTermWithUniverses :: Env.Env -> UniverseContext -> Term -> Either String String
+displayTermWithUniverses env = renderUniverses env (displayPrinter env)
+
+renderUniverses :: Env.Env -> (Naming -> Printer) -> UniverseContext -> Term -> Either String String
+renderUniverses env makePrinter context value = do
     header <- universeHeader Surface names context
-    (_, body) <- renderWith Surface names value
+    let printer = makePrinter names
+    body <- maybe (Right (pieceText (printerShow printer 0 noNames value) "")) Left (printerFail printer 0 value)
     return ((if context == emptyUniverses then id else showString "(* Universes " . header . showString ". *)\n") . showString body $ "")
     where
         base = naming env
@@ -299,7 +319,19 @@ shared count function = go 0 (functionType function) (functionBody function) whe
     go place _ _ = place
 
 printerOf :: Style -> Naming -> Printer
-printerOf style names = Printer { printerShow = render, printerBind = bind, printerFail = problem } where
+printerOf style = printerWith style Nothing
+
+displayPrinter :: Env.Env -> Naming -> Printer
+displayPrinter env = printerWith Surface (Just (Env.envSyntax env))
+
+printerWith :: Style -> Maybe Env.Syntax -> Naming -> Printer
+printerWith style syntax names = Printer { printerShow = render, printerBind = bind, printerFail = problem } where
+    showString = Format.plain
+    showChar c = Format.plain [c]
+    hasFormats = maybe False (any withFormat . Env.syntaxRules) syntax
+    withFormat (Syntax.SyntaxRule _ _ _ (Syntax.RocqTarget _ _ _ template)) = maybe False (const True) (fst (Template.printFormat template))
+    withFormat _ = False
+    showParen yes doc = if yes then showChar '(' . doc . showChar ')' else doc
     known global = maybe False qualified (namingGlobal names global)
     written = if style == Rocq then printableInstance names else printableLevel names
     problem depth value = case value of
@@ -347,11 +379,11 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
     -- The variables of a pattern: one that is not `named` is written `_`.
     patternBinds depth scope hints = (map fst bound, if null bound then scope else snd (last bound)) where
         bound = drop 1 (scanl (\(_, inner) (level, (hint, named)) -> if named then bind level inner hint else ("_", inner)) ("", scope) (zip [depth ..] hints))
-    wrap limit piece = showParen (pieceRank piece > limit) (pieceText piece)
+    wrap limit piece = showParen (pieceRank piece > limit) (pieceDoc piece)
     free depth outer inner = IntSet.union (pieceFree outer) (IntSet.delete depth (pieceFree inner))
     outside depth piece = IntSet.filter (< depth) (pieceFree piece)
     global reference = (if namingAtMark names reference then showChar '@' else id) . maybe id showString (namingGlobal names reference)
-    reference symbol instance_ = Piece 0 IntSet.empty (global symbol . instanceText style names printedInstance) (maximum (0 : map closedUniversePeak instance_)) where
+    reference symbol instance_ = Piece 0 IntSet.empty (global symbol . showString (instanceText style names printedInstance "")) (maximum (0 : map closedUniversePeak instance_)) where
         printedInstance = case symbol of
             GlobalInd block _
                 | namingTemplate names block -> []
@@ -369,7 +401,137 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
     -- Which variables occur in a term does not depend on their names, so a
     -- product can ask whether its body mentions its variable before it decides
     -- whether that variable gets a name.
-    render depth scope value = case value of
+    render = interpreted (fmap prepare syntax)
+    prepare current = (current, options, options) where
+        options = Unnotation.choices current
+    temporary (current, base, _) [] = (current, base, base)
+    temporary (current, base, _) scopes = (current, base, Unnotation.choices (foldr Unnotation.open current scopes))
+    forClass Nothing _ = []
+    forClass (Just (current, _, _)) cls = ArgumentScopes.syntaxClassScopes current cls
+    typeClass expression = case expression of
+        App f _ -> typeClass f
+        Pi {} -> Just Syntax.FunClass
+        Prop -> Just Syntax.SortClass
+        Type {} -> Just Syntax.SortClass
+        _ -> Syntax.ReferenceClass <$> Unnotation.global expression
+    interpreted Nothing = raw Nothing
+    interpreted current@(Just table) = showAt where
+        -- A binder name depends on whether its body mentions it. Scope-
+        -- sensitive notation selection can inspect that very name, so keep
+        -- free variables and universe metadata independent of selection.
+        showAt depth scope value = original { pieceDoc = pieceDoc output, pieceRank = pieceRank output } where
+            original = raw current depth scope value
+            output = maybe original (\(_, _, piece) -> piece) (sugared table Nothing Set.empty depth scope value)
+    sugared table@(current, _, options) entry visited depth scope value = listToMaybe (mapMaybe choose options) where
+        choose (Unnotation.Choice rule@(Syntax.SyntaxRule parts level assoc target) delimiter)
+            | fst (Syntax.ruleEntry parts) /= entry = Nothing
+            | Syntax.AliasHead name : _ <- parts, Set.member name (namesTaken scope) = Nothing
+            | otherwise = do
+                chunks <- Unnotation.match current rule value
+                let next = maybe (temporary table []) (\(owner, _) -> prepare (Unnotation.open owner current)) delimiter
+                let sizes = [count | Unnotation.RepeatLength count <- chunks]
+                    isSource (Unnotation.RepeatLength _) = False
+                    isSource _ = True
+                written <- mapM (spell next) (filter isSource chunks)
+                let custom = case target of
+                        Syntax.RocqTarget _ slots _ body -> fst (Template.printFormat body) >>= \fmt -> Format.formatted parts slots sizes fmt written
+                        _ -> Nothing
+                    text = fromMaybe (joinChunks written) custom
+                    -- LoL checks a return-less match against its expected
+                    -- type. Keep the kernel's nondependent motive available
+                    -- when the displayed expression is read on its own.
+                    motive = case (target, value) of
+                        (Syntax.RocqTarget _ _ _ source, Case _ _ _ _ hints result _ _)
+                            | Syntax.TCase _ _ _ Nothing _ <- snd (Template.printFormat source) -> Just (lift 0 (negate (length hints)) result)
+                        _ -> Nothing
+                    strength = case (motive, parts) of
+                        (Just _, _) -> 0
+                        (_, [Syntax.AliasHead _]) -> 0
+                        _ -> level
+                    rank = if strength == 0 || delimiter /= Nothing then 0 else 3
+                    scoped = maybe text (\(_, key) -> showChar '(' . text . showString ")%" . showString key) delimiter
+                    printed = case motive of
+                        Just typ -> showChar '(' . scoped . showString " : " . pieceDoc (interpreted (Just (temporary table [])) depth scope typ) . showChar ')'
+                        Nothing -> scoped
+                    original = raw (Just table) depth scope value
+                return (if delimiter == Nothing then strength else 0, assoc, original { pieceRank = rank, pieceDoc = printed })
+        spell next (Unnotation.PatternSlotText target@(Just _) limit _ value) = case value of
+            Unnotation.DummyBinder -> patternTerm [] (Hole 0)
+            Unnotation.BinderName path _ -> patternTerm path (Var 0)
+            Unnotation.ConstructorBinder path g parameters fields ->
+                let width = length fields
+                    values = [if used then Var i else Hole 0 | (i, (_, used)) <- zip (reverse [0 .. width - 1]) fields]
+                    application = foldl App (fromGlobal g) (replicate parameters (Hole 0) ++ values)
+                in patternTerm (path ++ map fst fields) application
+            operand@(Unnotation.Operand _ _ _ _) -> spell next (Unnotation.Slot target limit Nothing operand)
+            where
+                patternTerm path term = spell next (Unnotation.Slot target limit Nothing (Unnotation.Operand False path [] term))
+        spell _ (Unnotation.PatternSlotText Nothing _ _ Unnotation.DummyBinder) = Just ("", showChar '_')
+        spell next (Unnotation.PatternSlotText Nothing _ _ named@Unnotation.BinderName {}) = spell next (Unnotation.BinderSlotText False named)
+        spell _ (Unnotation.PatternSlotText Nothing _ group (Unnotation.ConstructorBinder hints g params fields)) = do
+            label <- namingGlobal names g
+            let (_, above) = binds depth scope hints
+                (variables, _) = binds (depth + length hints) above (map fst fields)
+                args = replicate params "_" ++ zipWith (\name (_, used) -> if used then name else "_") variables fields
+                written = (if namingAtMark names g then showChar '@' else id) . showString (unwords (label : args))
+            return ("", showParen (group && not (null args)) written)
+        spell next (Unnotation.PatternSlotText Nothing _ group operand@(Unnotation.Operand same hints ss t)) =
+            case flatHead t of
+                Var _ -> spell next (Unnotation.BinderSlotText False operand)
+                Con {} -> spell next (Unnotation.Slot Nothing (if group then 0 else 10) Nothing (Unnotation.Operand same hints ss t))
+                _ -> Nothing
+            where
+                flatHead (App f (Var _)) = flatHead f
+                flatHead t = t
+        spell _ (Unnotation.Word text) = Just (text, showString text)
+        spell next (Unnotation.Slot _ _ _ named@Unnotation.BinderName {}) = spell next (Unnotation.BinderSlotText False named)
+        spell _ (Unnotation.BinderSlotText True (Unnotation.BinderName _ (Hole _))) = Nothing
+        spell next (Unnotation.BinderSlotText typed (Unnotation.BinderName hints annotation)) = case reverse hints of
+            [] -> Nothing
+            hint : outer -> do
+                let (_, above) = binds depth scope (reverse outer)
+                    at = depth + length outer
+                    (name, _) = bind at above hint
+                    domain = interpreted (Just (temporary next (forClass (Just next) Syntax.SortClass))) at above annotation
+                    written = if typed then showChar '(' . showString name . showString " : " . pieceDoc domain . showChar ')' else showString name
+                return ("", written)
+        spell next (Unnotation.BinderSlotText _ (Unnotation.Operand _ hints _ term))
+            | Var _ <- term = Just ("", pieceDoc named)
+            | otherwise = Nothing
+            where
+                (_, below) = binds depth scope hints
+                named = raw (Just next) (depth + length hints) below term
+        spell next (Unnotation.RefSlotText operand@(Unnotation.Operand _ _ _ term))
+            | Just g <- Unnotation.global term, Just name <- namingGlobal names g, qualified name, Set.notMember name (namesTaken scope) = Just ("", showString name)
+            | otherwise = spell next (Unnotation.BinderSlotText False operand)
+        spell next (Unnotation.RefSlotText operand) = spell next (Unnotation.BinderSlotText False operand)
+        spell next@(parent, _, _) (Unnotation.Slot target limit peer (Unnotation.Operand same hints scopes term)) = do
+            let (_, below) = binds depth scope hints
+                at = depth + length hints
+                seen = if same then Set.insert entry visited else Set.empty
+            if same && Set.member target seen then Nothing else do
+                let notation = sugared (temporary next scopes) target seen at below term
+                    ordinary = raw (Just next) at below term
+                (strength, assoc, piece) <- case notation of
+                    Just result -> Just result
+                    Nothing | target == Nothing -> Just ([0, 10, 99, 200] !! pieceRank ordinary, "", ordinary)
+                    _ -> Nothing
+                let equal = maybe True (== assoc) peer
+                    parens = strength > limit || strength == limit && not equal
+                case target of
+                    Just entryName | parens, not (Unnotation.parentheses (foldr Unnotation.open parent scopes) entryName limit strength) -> Nothing
+                    _ -> return ("", showParen parens (pieceDoc piece))
+        spell _ _ = Nothing
+    joinChunks [] = id
+    joinChunks ((first, text) : rest) = text . append first rest where
+        append _ [] = id
+        append left ((word, next) : more) = space . next . append word more where
+            space
+                | (left, word) `elem` [("(", ")"), ("[", "]"), ("{", "}")] = showChar ' '
+                | left `elem` ["(", "[", "{"] || word `elem` [")", "]", "}", ",", ";"] = id
+                | otherwise = showChar ' '
+    raw table depth scope value = case value of
+        Hole _ -> Piece 0 IntSet.empty (showChar '_') 0
         Prop -> Piece 0 IntSet.empty (showString "Prop") 0
         Type level -> Piece 0 IntSet.empty (sortText level) (closedUniversePeak level)
         Cst constant instance_ -> reference (GlobalCst constant) instance_
@@ -386,8 +548,8 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
                 family = maybe id showString (namingGlobal names (GlobalInd block 0))
                 expansion = showString "(fun" . args . showString " (" . showString receiver . showString " : @" . family . args . showString ") => " . rocqField (depth + count + 1) body block field (showString receiver) . showChar ')'
         Proj block field receiver
-            | style == Rocq, namingTemplate names block -> piece { pieceRank = 0, pieceText = selected }
-            | otherwise -> piece { pieceRank = 0, pieceText = dotted }
+            | style == Rocq, namingTemplate names block -> piece { pieceRank = 0, pieceDoc = selected }
+            | otherwise -> piece { pieceRank = 0, pieceDoc = dotted }
             where
                 piece = render depth scope receiver
                 label = maybe id showString (namingGlobal names (GlobalProj block field))
@@ -396,16 +558,16 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
                 -- Rocq's prefix constant for a template projection has its
                 -- declaration universe. A one-field record pattern elaborates
                 -- to the primitive projection at the receiver's universe.
-                selected = rocqField depth scope block field (pieceText piece)
+                selected = rocqField depth scope block field (pieceDoc piece)
         Var index -> Piece 0 (IntSet.singleton (depth - index - 1)) (showString (namesTable scope IntMap.! (depth - index - 1))) 0
         Pi hint domain body -> if dependent || style == Rocq then quantified depth "forall " ", " (if dependent then name else "_") left right else Piece 2 (free depth left right) (wrap 1 left . showString " -> " . wrap 3 right) (max (pieceUniv left) (pieceUniv right)) where
             (name, inner) = bind depth scope hint
             dependent = IntSet.member depth (pieceFree right)
-            left = render depth scope domain
-            right = render (depth + 1) (if dependent then inner else scope) body
+            left = typeTerm depth scope domain
+            right = typeTerm (depth + 1) (if dependent then inner else scope) body
         -- A binder that its body does not mention is written `_`, as Rocq
         -- prints it. The binders of a `fix` and of a `let` keep their names.
-        Lam hint domain body -> quantified depth "fun " " => " (if dependent then name else "_") (render depth scope domain) right where
+        Lam hint domain body -> quantified depth "fun " " => " (if dependent then name else "_") (typeTerm depth scope domain) right where
             (name, inner) = bind depth scope hint
             dependent = IntSet.member depth (pieceFree right)
             right = render (depth + 1) (if dependent then inner else scope) body
@@ -418,17 +580,20 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
         Let hint bound annotation body -> Piece 3 (IntSet.union (pieceFree given) (free depth typed rest)) (showString "let " . showString name . showString " : " . wrap 2 typed . showString " := " . wrap 2 given . showString " in " . wrap 3 rest) (maximum [pieceUniv given, pieceUniv typed, pieceUniv rest]) where
             (name, inner) = bind depth scope hint
             given = render depth scope bound
-            typed = render depth scope annotation
+            typed = typeTerm depth scope annotation
             rest = render (depth + 1) inner body
         -- A cast is written in parentheses wherever it stands. What is
         -- cast is an application at most: a binder or an arrow before the
         -- colon would take the cast for itself.
         Cast bound annotation -> Piece 0 (IntSet.union (pieceFree given) (pieceFree typed)) (showChar '(' . wrap 1 given . showString " : " . wrap 3 typed . showChar ')') (max (pieceUniv given) (pieceUniv typed)) where
-            given = render depth scope bound
-            typed = render depth scope annotation
-        App function argument -> Piece 1 (IntSet.union (pieceFree left) (pieceFree right)) (wrap 1 left . showChar ' ' . wrap 0 right) (max (pieceUniv left) (pieceUniv right)) where
+            given = inScopes (maybe [] (forClass table) (typeClass annotation)) depth scope bound
+            typed = typeTerm depth scope annotation
+        App function argument -> Piece 1 (IntSet.union (pieceFree left) (pieceFree right)) applied (max (pieceUniv left) (pieceUniv right)) where
+            applied
+                | hasFormats = Format.application (wrap 1 left) (wrap 0 right)
+                | otherwise = wrap 1 left . showChar ' ' . wrap 0 right
             left = render depth scope function
-            right = render depth scope argument
+            right = inScopes (policy function) depth scope argument
         -- `as` and `in` are written when the return clause mentions what they
         -- bind, and `in` when no branch names the family. A
         -- variable of a pattern that its branch does not mention is written
@@ -453,7 +618,17 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
             branch place (given, body) = (place, fst named, shown) where
                 shown = render (depth + length given) (snd named) body
                 named = patternBinds depth scope [(hint, IntSet.member level (pieceFree shown)) | (level, hint) <- zip [depth ..] given]
-            arm (place, given, body) = showString " | " . global (GlobalCon block index place) . holes . foldr (.) id [showChar ' ' . showString name | name <- given] . showString " => " . wrap 3 body
+            arm (place, given, body) = showString " | " . patternText . showString " => " . wrap 3 body where
+                constructor = GlobalCon block index place
+                patternText = case syntax of
+                    Nothing -> global constructor . holes . foldr (.) id [showChar ' ' . showString name | name <- given]
+                    Just _ -> pieceDoc (render (depth + width) temporary application)
+                -- Parameter holes and unused branch binders are names for
+                -- this printing pass only. Their levels are never admitted.
+                labels = replicate (namingParams names block) "_" ++ given
+                width = length labels
+                temporary = scope { namesTable = IntMap.union (IntMap.fromList (zip [depth ..] labels)) (namesTable scope) }
+                application = foldl App (fromGlobal constructor) [Var i | i <- reverse [0 .. width - 1]]
         -- `fix f (xs : As) {struct x} : B := t`: the binders are those that
         -- the type and the body share. A body in a block of several functions
         -- is an application at most: a body that ends in a `fix`, as an arrow
@@ -471,6 +646,19 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
                 domains = map snd named
                 value = render (depth + count + width) below body
                 result = render (depth + width) (below { namesTable = IntMap.union (IntMap.fromList (zip [depth ..] variables)) (namesTable scope) }) (codomain width (functionType function))
+        where
+            render = interpreted (fmap (\t -> temporary t []) table)
+            inScopes scopes = interpreted (fmap (\t -> temporary t scopes) table)
+            typeTerm = inScopes (forClass table Syntax.SortClass)
+            policy function = case table of
+                Just (current, _, _) | ArgumentScopes.hasPolicies current -> lookupArg current 0 function
+                _ -> []
+            lookupArg current n (App f _) = lookupArg current (n + 1) f
+            lookupArg current n headTerm = case Unnotation.global headTerm of
+                Nothing -> []
+                Just g -> case drop n (ArgumentScopes.globalPositions current g True) of
+                    first : _ -> first
+                    [] -> []
     lambdas width value = case value of
         Lam hint annotation body
             | width > 0 -> (\(rest, inner) -> ((hint, annotation) : rest, inner)) (lambdas (width - 1) body)
@@ -481,7 +669,7 @@ printerOf style names = Printer { printerShow = render, printerBind = bind, prin
         _ -> value
     sortText level
         | style == Rocq && level == Closed 0 = showString "Set"
-        | otherwise = showString "Type@{" . levelText style names level . showChar '}'
+        | otherwise = showString "Type@{" . showString (levelText style names level "") . showChar '}'
 
 declaration :: Env.Env -> ConstId -> Env.Entry -> Either String String
 declaration = declarationWith True
@@ -492,7 +680,13 @@ statement :: Env.Env -> ConstId -> Env.Entry -> Either String String
 statement = declarationWith False
 
 declarationWith :: Bool -> Env.Env -> ConstId -> Env.Entry -> Either String String
-declarationWith proved env c entry = snd <$> commandWith proved Surface names c entry where
+declarationWith proved = writeDeclaration (const (printerOf Surface)) proved
+
+displayDeclaration :: Env.Env -> ConstId -> Env.Entry -> Either String String
+displayDeclaration = writeDeclaration displayPrinter True
+
+writeDeclaration :: (Env.Env -> Naming -> Printer) -> Bool -> Env.Env -> ConstId -> Env.Entry -> Either String String
+writeDeclaration make proved env c entry = snd <$> commandUsing (make env) proved Surface names c entry where
     own = Map.fromList [(global, name) | (name, global) <- Env.declGlobals c (Env.entryName entry) (Env.entryDecl entry)]
     names = (naming env) { namingGlobal = \global -> Map.lookup global own <|> globalName env global }
 
@@ -503,18 +697,28 @@ command = commandWith True
 
 -- `proved`: with the term of a theorem.
 commandWith :: Bool -> Style -> Naming -> ConstId -> Env.Entry -> Either String (Integer, String)
-commandWith proved style outerNames c entry
+commandWith proved style = commandUsing (printerOf style) proved style
+
+commandUsing :: (Naming -> Printer) -> Bool -> Style -> Naming -> ConstId -> Env.Entry -> Either String (Integer, String)
+commandUsing makePrinter proved = commandBodies makePrinter True proved
+
+-- The object report prints the signature of every definition as well as every theorem.
+commandBodies :: (Naming -> Printer) -> Bool -> Bool -> Style -> Naming -> ConstId -> Env.Entry -> Either String (Integer, String)
+commandBodies makePrinter definitions proved style outerNames c entry
     = do
         declarations <- mapM (universeRelation Rocq names) [edge | published, edge <- universeConstraints context]
         (peak, body) <- case Env.entryDecl entry of
             Env.Axiom a -> constant "Axiom" a Nothing
-            Env.Definition a t -> constant "Definition" a (Just t)
+            Env.Definition a t -> constant "Definition" a (if definitions then Just t else Nothing)
             Env.Theorem a t -> constant (if style == Rocq then "Definition" else "Theorem") a (if proved then Just t else Nothing)
             Env.Inductive count [family]
                 | Just record <- Env.familyRecord family -> recordDeclaration count family record
             Env.Inductive count families -> inductive count families
         return (peak, concatMap (\relation -> "Constraint " ++ relation ".\n") declarations ++ body)
     where
+        showString = Format.plain
+        showChar c = Format.plain [c]
+        finish doc = Format.output doc ""
         published = style == Rocq && null (universeNames context) && not (Set.null (constraintOwners context))
         context = Env.entryUniverses entry
         names = outerNames { namingUniverses = (if isTemplate then templateHints style else universeHints outerNames) (universeNames context), namingLocalBlock = localBlock }
@@ -531,7 +735,7 @@ commandWith proved style outerNames c entry
         contextPeak = maximum (0 : concatMap levels (universeConstraints context)) where
             levels (UniverseLe left right) = map closedUniversePeak [left, right]
             levels (UniverseEq left right) = map closedUniversePeak [left, right]
-        printer = printerOf style names
+        printer = makePrinter names
         printed value = maybe (Right (printerShow printer 0 noNames value)) Left (printerFail printer 0 value)
         given global = case namingGlobal names global of
             Just name
@@ -542,7 +746,7 @@ commandWith proved style outerNames c entry
             universes <- declHeader
             typed <- printed annotation
             value <- mapM printed body
-            return (maximum (contextPeak : pieceUniv typed : map pieceUniv (maybe [] pure value)), (polymorphic . showString kind . showChar ' ' . showString name . universes . showString " : " . pieceText typed . maybe id (\piece -> showString " := " . pieceText piece) value . showChar '.') "")
+            return (maximum (contextPeak : pieceUniv typed : map pieceUniv (maybe [] pure value)), finish (polymorphic . showString kind . showChar ' ' . showString name . universes . showString " : " . pieceDoc typed . maybe id (\piece -> showString " := " . pieceDoc piece) value . showChar '.'))
         -- The parameters are named once, from the type of the first family, and
         -- every type of the block is printed under those names.
         inductive count families = do
@@ -552,11 +756,11 @@ commandWith proved style outerNames c entry
                 first : _ -> telescope count 0 noNames (Env.familyType first)
                 [] -> Left "an inductive block without a family has no surface spelling"
             bodies <- mapM (body count scope) (zip [0 ..] families)
-            let header = foldr (.) id [showString " (" . showString name . showString " : " . pieceText domain . showChar ')' | (name, domain) <- parameters]
-            return (maximum (contextPeak : map pieceUniv (map snd parameters ++ concatMap snd bodies)), (polymorphic . showString "Inductive " . foldr1 (\left right -> left . showString " with " . right) [showString name . (if index == (0 :: Int) then universes else id) . header . showString " : " . pieceText arity . showString " :=" . foldr (.) id [showString " | " . showString constructor . showString " : " . pieceText signature | (constructor, signature) <- zip constructors signatures] | (index, ((name, constructors), arity : signatures)) <- zip [0 ..] bodies] . showChar '.') "")
+            let header = foldr (.) id [showString " (" . showString name . showString " : " . pieceDoc domain . showChar ')' | (name, domain) <- parameters]
+            return (maximum (contextPeak : map pieceUniv (map snd parameters ++ concatMap snd bodies)), finish (polymorphic . showString "Inductive " . foldr1 (\left right -> left . showString " with " . right) [showString name . (if index == (0 :: Int) then universes else id) . header . showString " : " . pieceDoc arity . showString " :=" . foldr (.) id [showString " | " . showString constructor . showString " : " . pieceDoc signature | (constructor, signature) <- zip constructors signatures] | (index, ((name, constructors), arity : signatures)) <- zip [0 ..] bodies] . showChar '.'))
         declHeader
             | published = Right id
-            | otherwise = universeHeader style names context
+            | otherwise = (\header -> showString (header "")) <$> universeHeader style names context
         recordDeclaration count family record = do
             name <- given (GlobalInd c 0)
             constructor <- given (GlobalCon c 0 0)
@@ -568,7 +772,7 @@ commandWith proved style outerNames c entry
                     Type (Maximum (Closed 0) level)
                         | isTemplate -> printerShow printer count scope (Type level)
                     Type level
-                        | isTemplate && inferredSort level -> Piece 0 IntSet.empty (showString "Type") 0
+                        | isTemplate && inferredSort level -> Piece 0 IntSet.empty (Format.plain "Type") 0
                     _ -> printerShow printer count scope result
                 -- For an inferred minimum the spelled-out symbolic sort of
                 -- Record would impose Set, even when every field is a proof.
@@ -579,12 +783,12 @@ commandWith proved style outerNames c entry
                 [(_, typ)] -> under count typ
                 _ -> Left "a record must have one constructor"
             fields <- fieldTelescope count scope [0 .. length (Env.recordFields record) - 1] signature
-            let header = foldr (.) id [showString " (" . showString label . showString " : " . pieceText typ . showChar ')' | (label, typ) <- parameters]
-                member (label, typ) = showString label . showString " : " . pieceText typ
+            let header = foldr (.) id [showString " (" . showString label . showString " : " . pieceDoc typ . showChar ')' | (label, typ) <- parameters]
+                member (label, typ) = showString label . showString " : " . pieceDoc typ
                 members = foldr1 (\left right -> left . showString "; " . right) (map member fields)
                 keyword = if Env.recordEta record then "Record " else "Inductive "
                 prefix = showString "#[projections(primitive)] " . polymorphic . showString keyword . showString name . universes . header
-            return (maximum (contextPeak : pieceUniv arity : map (pieceUniv . snd) (parameters ++ fields)), (prefix . showString " : " . pieceText arity . showString " := " . showString constructor . showString " { " . (if null fields then id else members) . showString " }.") "")
+            return (maximum (contextPeak : pieceUniv arity : map (pieceUniv . snd) (parameters ++ fields)), finish (prefix . showString " : " . pieceDoc arity . showString " := " . showString constructor . showString " { " . (if null fields then id else members) . showString " }."))
         parameterSlots n (Pi _ domain body)
             | n > 0 = Set.union (termParameters domain) (parameterSlots (n - 1) body)
         parameterSlots _ _ = Set.empty

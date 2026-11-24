@@ -1,5 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
-module LoL.Env (Decl (..), Family (Family, familyName, familyType, familyCons, familyRecord, familyTemplate), RecordInfo (..), Entry (..), Env, Refusal (..), Mode (..), emptyEnv, envDecls, admissionView, selectUniverseScope, checkUniverseScope, envNames, withNames, envAmbiguous, withAmbiguous, constructorName, envFresh, envStamp, envSpecs, declTypes, declBody, reducibleBody, declTerms, declGlobals, reachable, factsFor, allFacts, appendedFacts, assumptions, declare, declareIn, declareWithUniverses, declareInWithUniverses, validUniverses, checkUniverses, checkUniversesBefore, beforeUniverseDeclaration, typeOfTerm, typeOfTermWithUniverses, shownType, shownTypeWithUniverses, visible, visibleEntry, normalForm, normalFormWithUniverses, argumentArity, universeGoal, askIn, oracleWorld, withProofOracle, run, Syntax (Syntax, syntaxArguments, syntaxInfix, syntaxNumerals, syntaxNever, syntaxProjectionParameters, syntaxRuleSites), syntaxRules, readerRules, syntaxReader, registerRule, withRulesFrom, notationWords, envSyntax, withSyntax, envArguments, envInfix, envNumerals, validOperator) where
+module LoL.Env (Decl (..), Family (Family, familyName, familyType, familyCons, familyRecord, familyTemplate), RecordInfo (..), Entry (..), Env, Refusal (..), Mode (..), emptyEnv, envDecls, activeUniverses, reserveIdentities, admissionView, selectUniverseScope, checkUniverseScope, envNames, withNames, envAmbiguous, withAmbiguous, constructorName, envFresh, envStamp, envSpecs, declTypes, declBody, reducibleBody, declTerms, declGlobals, reachable, factsFor, allFacts, appendedFacts, assumptions, assumptionTable, declare, declareIn, declareWithUniverses, declareInWithUniverses, validUniverses, checkUniverses, checkUniversesBefore, beforeUniverseDeclaration, typeOfTerm, typeOfTermWithUniverses, shownType, shownTypeWithUniverses, visible, visibleEntry, normalForm, normalFormWithUniverses, argumentArity, scopeSignature, universeGoal, askIn, oracleWorld, withProofOracle, run, Syntax (Syntax, syntaxArguments, syntaxArgScopes, syntaxArgPrefixes, syntaxDefaults, syntaxObserved, syntaxSchedule, syntaxClasses, syntaxBindings, syntaxInfix, syntaxNumerals, syntaxNever, syntaxProjectionParameters, syntaxRuleSites, syntaxScopes, syntaxKeys, syntaxOpen, syntaxHistory, syntaxOwner, syntaxEntries, syntaxAliases, syntaxDisabled), declareEntry, withEntryDependencies, scopeDelimiter, selectedInterpretations, enabledFor, activeInterpretation, syntaxRules, readerRules, syntaxReader, registerRule, withRulesFrom, notationWords, envSyntax, withSyntax, envArguments, envInfix, envNumerals, validOperator) where
 
 import Control.Monad (when)
 import Data.IORef
@@ -11,7 +11,7 @@ import Hol.V2.Embedding (LogicVar (..), TermNode, mkLVar, mkNApp, mkNCon, DataCo
 import LoL.Core
 import qualified LoL.Front.HostLexer as Lexer
 import qualified LoL.Front.Notation as Notation
-import LoL.Front.Syntax (Span, SyntaxRule (..), RulePart (..), RuleTarget (..))
+import LoL.Front.Syntax (Span, SyntaxStep (..), SyntaxRule (..), RulePart (..), RuleTarget (..), ScopeAction (..), ScopeClass (..), Usage (..), NotationSelector (..), Activation (..), ruleEntry)
 import LoL.Hol.Embed
 import LoL.Hol.Session
 import LoL.Oracle (World (..), Failure (..), positive)
@@ -70,10 +70,25 @@ validOperator symbol = not (null symbol) && all Lexer.symbol symbol && symbol `n
 data Syntax
     = SyntaxData
         { syntaxArguments            :: !(Map.Map Global [Bool])
+        , syntaxArgScopes            :: !(Map.Map Global [[String]])
+        , syntaxArgPrefixes          :: !(Map.Map Global Int)
+        , syntaxDefaults             :: !(Map.Map Global [[String]])
+        , syntaxObserved             :: !(Map.Map Global [[String]])
+        , syntaxSchedule             :: ![(Int, Int, SyntaxStep Global)]
+        , syntaxClasses              :: !(Map.Map Global [Maybe (ScopeClass Global)])
+        , syntaxBindings             :: !(Map.Map (ScopeClass Global) ([String], [String]))
         , syntaxInfix                :: !(Map.Map String (Global, Integer, String))
         , syntaxNumerals             :: !(Maybe (Global, Global))
         , syntaxNever                :: !(Set.Set Global)
         , syntaxProjectionParameters :: !(Map.Map Global Int)
+        , syntaxAliases              :: !(Map.Map String (SyntaxRule Global))
+        , syntaxOwner                :: !String
+        , syntaxEntries              :: !(Map.Map String Bool)
+        , syntaxScopes               :: !(Set.Set String)
+        , syntaxKeys                 :: !(Map.Map String String)
+        , syntaxOpen                 :: ![String]
+        , syntaxDisabled             :: !(Set.Set (Usage, SyntaxRule Global))
+        , syntaxHistory              :: ![Either (ScopeAction Global) (SyntaxRule Global)]
         , syntaxRuleIndex            :: !Notation.Rules
         , syntaxRuleSites            :: !(Map.Map (SyntaxRule Global) (String, Span))
         }
@@ -81,9 +96,23 @@ data Syntax
 
 -- Modules that declare no ordinary record accessors have the original syntax.
 pattern Syntax :: Map.Map Global [Bool] -> Map.Map String (Global, Integer, String) -> Maybe (Global, Global) -> Set.Set Global -> Syntax
-pattern Syntax arguments infixes numerals never <- SyntaxData arguments infixes numerals never _ _ _ where
-    Syntax arguments infixes numerals never = SyntaxData arguments infixes numerals never Map.empty Notation.emptyRules Map.empty
+pattern Syntax arguments infixes numerals never <- SyntaxData arguments _ _ _ _ _ _ _ infixes numerals never _ _ _ _ _ _ _ _ _ _ _ where
+    Syntax arguments infixes numerals never = SyntaxData arguments Map.empty Map.empty Map.empty Map.empty [] Map.empty Map.empty infixes numerals never Map.empty Map.empty "" Map.empty Set.empty Map.empty [] Set.empty [] Notation.emptyRules Map.empty
 {-# COMPLETE Syntax #-}
+
+declareEntry :: Bool -> String -> Syntax -> Syntax
+declareEntry local name syntax = syntax
+    { syntaxEntries = Map.insert name local (syntaxEntries syntax)
+    , syntaxRuleIndex = Notation.publishEntry name (syntaxRuleIndex syntax)
+    }
+
+-- Requiring a dependency makes its entry names available to qualified lookup.
+-- Only importing its grammar installs its rules or gives its short names priority.
+withEntryDependencies :: [Syntax] -> Syntax -> Syntax
+withEntryDependencies dependencies syntax = syntax
+    { syntaxEntries = entries
+    , syntaxRuleIndex = (syntaxRuleIndex syntax) { Notation.knownEntries = Map.keysSet entries }
+    } where entries = Map.unions (syntaxEntries syntax : map syntaxEntries dependencies)
 
 syntaxRules :: Syntax -> [SyntaxRule Global]
 syntaxRules = Map.keys . syntaxRuleSites
@@ -92,12 +121,67 @@ syntaxRules = Map.keys . syntaxRuleSites
 -- A second declaration may record a new source location for an existing rule.
 registerRule :: SyntaxRule Global -> (String, Span) -> Syntax -> Syntax
 registerRule rule site syntax = syntax
-    { syntaxRuleIndex = Notation.addRule rule (syntaxRuleIndex syntax)
+    { syntaxHistory = case rule of
+        SyntaxRule _ _ _ RocqTarget {} -> Right rule : syntaxHistory syntax
+        _ -> syntaxHistory syntax
+    , syntaxDisabled = Set.delete (ParsingOnly,rule) (Set.delete (PrintingOnly,rule) (syntaxDisabled syntax))
+    , syntaxAliases = case rule of
+        SyntaxRule (AliasHead n : _) _ _ _ -> Map.insert n rule (if null (fst site) then syntaxAliases syntax else Map.insert (fst site ++ "." ++ n) rule (syntaxAliases syntax))
+        _ -> syntaxAliases syntax
+    , syntaxRuleIndex = Notation.addRule rule (syntaxRuleIndex syntax)
     , syntaxRuleSites = Map.insert rule site (syntaxRuleSites syntax)
     }
 
+enabledFor :: Syntax -> Usage -> SyntaxRule Global -> Bool
+enabledFor syntax mode rule = Set.notMember (mode,rule) (syntaxDisabled syntax)
+
+selectedInterpretations :: Syntax -> Activation -> [SyntaxRule Global]
+selectedInterpretations syntax (Activation _ direction _ selector scope entry) = filter matches (syntaxRules syntax) where
+    matches rule@(SyntaxRule marked _ _ (RocqTarget owner _ use _)) = use /= ReservedSyntax && (use == BothWays || direction == BothWays || use == direction) && maybe True (== maybe "" id owner) scope && maybe True (== maybe "" id table) entry && selected where
+        (table,parts) = ruleEntry marked
+        selected = case selector of
+            EveryNotation -> True
+            AliasSelector name -> case parts of
+                AliasHead n : _ -> name == n || Map.lookup name (syntaxAliases syntax) == Just rule
+                _ -> False
+            PatternSelector patternText -> case parts of
+                AliasHead _ : _ -> False
+                _ -> requested == shape || case requested of { [Just op] -> shape == [Nothing,Just op,Nothing]; _ -> False }
+                where
+                    shape = concatMap slot parts
+                    requested = map literal (words patternText)
+    matches _ = False
+    slot (Literal token) = [Just token]
+    slot (RepeatSlot separator _) = [Nothing] ++ map Just (words separator) ++ [Just ".."] ++ map Just (words separator) ++ [Nothing]
+    slot _ = [Nothing]
+    literal ('\'':rest) | not (null rest), last rest == '\'' = Just (init rest)
+    literal word@(first:_) | Lexer.identStart first && all Lexer.identContinue word = Nothing
+    literal word = Just word
+
+-- Rocq interleaves unscoped interpretations and Open Scope events in the
+-- same priority stack. A later declaration within an open scope replaces
+-- its interpretation without moving the scope up the stack.
+activeInterpretation :: Syntax -> [RulePart] -> Maybe (SyntaxRule Global)
+activeInterpretation syntax parts = scan Set.empty (syntaxHistory syntax) where
+    candidates = Map.fromListWith (flip const) [(s,rule) | Right rule@(SyntaxRule shape _ _ (RocqTarget s _ use _)) <- syntaxHistory syntax, shape == parts, use `elem` [BothWays,ParsingOnly], enabledFor syntax ParsingOnly rule]
+    scan _ [] = Nothing
+    scan closed (action : rest) = case action of
+        Left (CloseScope sc) -> scan (Set.insert sc closed) rest
+        Left (OpenScope sc) | Set.notMember sc closed, Just selected <- Map.lookup (Just sc) candidates -> Just selected
+        Right rule@(SyntaxRule shape _ _ (RocqTarget Nothing _ use _)) | shape == parts && use `elem` [BothWays,ParsingOnly] && enabledFor syntax ParsingOnly rule -> Just rule
+        _ -> scan closed rest
+
+-- Parsing keeps earlier keys as aliases. Printing and Undelimit use the
+-- most recently declared key for the scope (interp/notation.ml in Rocq).
+scopeDelimiter :: Syntax -> String -> Maybe String
+scopeDelimiter syntax owner = current (syntaxHistory syntax) where
+    current [] = Nothing
+    current (Left (DelimitScope name key) : _) | name == owner = Just key
+    current (Left (UndelimitScope name) : _) | name == owner = Nothing
+    current (_ : rest) = current rest
+
 withRulesFrom :: Syntax -> Syntax -> Syntax
-withRulesFrom source target = target { syntaxRuleIndex = syntaxRuleIndex source, syntaxRuleSites = syntaxRuleSites source }
+withRulesFrom source target = target { syntaxDisabled = syntaxDisabled source, syntaxAliases = syntaxAliases source, syntaxBindings = syntaxBindings source, syntaxRuleIndex = syntaxRuleIndex source, syntaxRuleSites = syntaxRuleSites source, syntaxEntries = syntaxEntries source, syntaxScopes = syntaxScopes source, syntaxKeys = syntaxKeys source, syntaxOpen = syntaxOpen source, syntaxHistory = syntaxHistory source }
 
 syntaxReader :: Syntax -> Notation.Rules
 syntaxReader syntax = (syntaxRuleIndex syntax) { Notation.infixRules = syntaxInfix syntax }
@@ -215,6 +299,12 @@ constructorName env name = Set.member name (envAmbiguous env) || found (Map.look
 envFresh :: Env -> ConstId
 envFresh (Env _ _ fresh _ _ _ _ _) = fresh
 
+-- Discharged section assumptions leave a gap. Preserve surviving global IDs
+-- without introducing a declaration, universe constraint or kernel fact.
+reserveIdentities :: ConstId -> Env -> Env
+reserveIdentities next (Env decls names fresh stamp specs syntax hidden scope) =
+    Env decls names (max fresh next) stamp specs syntax hidden scope
+
 envStamp :: Env -> Maybe Stamp
 envStamp (Env _ _ _ stamp _ _ _ _) = stamp
 
@@ -254,6 +344,17 @@ argumentArity kernel limits env global = do
     where
         count (Pi _ _ rest) = 1 + count rest
         count _ = 0
+
+-- Scope classes keep constant heads and contract beta/iota/zeta. Hol already
+-- implements that reduction in the shown-type judgment with the zeta flag.
+scopeSignature :: Kernel -> Limits -> Env -> Global -> IO (Either Refusal Term)
+scopeSignature kernel limits env global = do
+    let identity = case global of { GlobalCst c -> c; GlobalInd c _ -> c; GlobalCon c _ _ -> c; GlobalProj c _ -> c }
+        context = maybe emptyUniverses entryUniverses (Map.lookup identity (envDecls env))
+        levels = map Parameter [0 .. length (universeNames context) - 1]
+    scoped <- admissionView identity env
+    let flags goal = beforeUniverseDeclaration scoped identity (foldlNApp (mkNCon LO_imply) [named "zeta", goal])
+    askUniversesIn flags "u_shown" kernel limits scoped context (fromGlobalAt levels global)
 
 -- How a ground run gets the facts of its environment. `Persistent`: from the
 -- engine that the kernel keeps, which holds every fact of the environment.
@@ -428,12 +529,58 @@ run :: Mode -> Kernel -> Limits -> Env -> [Term] -> TermNode -> [LogicVar] -> IO
 run mode kernel limits env terms goal outputs = do
     found <- newIORef Nothing
     reason <- newIORef Nothing
-    verdict <- withOracleDialogue kernel limits (declarationStamp env) (declarationFacts env) (judge env found reason . scopedDialogue kernel env) (\asked -> plain asked (universeGoal asked env goal))
+    verdict <- withOracleDialogue kernel limits (declarationStamp env) (declarationFacts env) (judge env found reason . scopedDialogue kernel env) (\asked -> do
+        result <- plain asked (universeGoal asked env goal) outputs
+        case result of
+            Rejected (Just report) -> Rejected . Just <$> explainInstance (plain asked) env report
+            _ -> return result)
     (,,) verdict <$> readIORef found <*> readIORef reason
     where
-        plain selected query = case mode of
-            Persistent -> loadedRun selected limits (declarationStamp env) (declarationFacts env) (withSegments env query) outputs
-            Reference -> groundRun selected limits (factsFor env terms) query outputs
+        plain selected query variables = case mode of
+            Persistent -> loadedRun selected limits (declarationStamp env) (declarationFacts env) (withSegments env query) variables
+            Reference -> groundRun selected limits (factsFor env terms) query variables
+
+-- A rechecked object can fail to instantiate a published scheme before a
+-- type is returned. For a closed numerical instance, ask Hol to substitute
+-- the levels, then locate the failed constraint with the kernel's relation.
+-- An open instance needs its original local hypotheses and is left alone.
+explainInstance :: (TermNode -> [LogicVar] -> IO Verdict) -> Env -> Report -> IO Report
+explainInstance ask env report
+    | Just (owner, levels) <- reference
+    , all numerical levels
+    , Just entry <- Map.lookup owner (envDecls env)
+    , let context = entryUniverses entry
+    , length levels == length (universeNames context)
+    , not (null (universeConstraints context)) = do
+        let result = LV_Named "RejectedInstanceConstraints"
+            goal = foldlNApp (named "u_subconstraints") [embedInstance levels, embedUniverseConstraints (universeConstraints context), mkLVar result]
+        answered <- ask goal [result]
+        case answered of
+            Admitted [actual] | Right edges <- recoverList actual -> witness edges
+            _ -> return report
+    | otherwise = return report
+    where
+        reference = case (reportRule report, reportCore report) of
+            ("T-Const", [Just (ReportTerm _ (Cst owner levels))]) -> Just (owner, levels)
+            ("T-Ind", [Just (ReportTerm _ (Ind owner _ levels))]) -> Just (owner, levels)
+            ("T-Constr", [Just (ReportTerm _ (Con owner _ _ levels))]) -> Just (owner, levels)
+            _ -> Nothing
+        numerical (Closed _) = True
+        numerical (Successor level) = numerical level
+        numerical (Maximum left right) = numerical left && numerical right
+        numerical _ = False
+        numericalEdge relation = case relation of
+            UniverseLe left right -> numerical left && numerical right
+            UniverseEq left right -> numerical left && numerical right
+        witness [] = return report
+        witness (edge : rest) = case recoverConstraint edge of
+            Right relation | numericalEdge relation -> do
+                checked <- ask (mkNApp (named "u_check_constraints") (embedList (kindOf "uconstraint") [edge])) []
+                case checked of
+                    Admitted [] -> witness rest
+                    Rejected _ -> return report { reportArgs = reportArgs report ++ [display edge], reportCore = reportCore report ++ [Just (ReportConstraint [] "required universe constraint" relation)] }
+                    _ -> return report
+            _ -> witness rest
 
 -- Proof programs may contain user tactics. Their oracle still asks the
 -- independent base kernel, through exactly the ground admission dispatcher.
@@ -546,11 +693,23 @@ rejection report reason
 -- The assumptions of c: the axioms that it depends on, through the bodies of
 -- theorems too.
 assumptions :: Env -> ConstId -> Set.Set ConstId
-assumptions env c = Set.filter isAxiom (declarationClosure dependencies env (Set.singleton c)) where
-    dependencies = termDependencies (constantsWith (const Set.empty)) declBody . entryDecl
+assumptions env c = Set.filter isAxiom (declarationClosure assumptionDependencies env (Set.singleton c)) where
     isAxiom d = case Map.lookup d (envDecls env) of
         Just (Entry { entryDecl = Axiom _ }) -> True
         _ -> False
+
+assumptionDependencies :: Entry -> Set.Set ConstId
+assumptionDependencies = termDependencies (constantsWith (const Set.empty)) declBody . entryDecl
+
+-- A checked declaration refers to older declarations or to its own inductive
+-- block. Compute the shared closure once when reporting all theorems in a graph.
+assumptionTable :: Env -> Map.Map ConstId (Set.Set ConstId)
+assumptionTable env = Map.foldlWithKey' collect Map.empty (envDecls env) where
+    collect earlier identity entry = Map.insert identity found earlier where
+        inherited = Set.unions [s | dependency <- Set.toList (assumptionDependencies entry), Just s <- [Map.lookup dependency earlier]]
+        found = case entryDecl entry of
+            Axiom _ -> Set.insert identity inherited
+            _ -> inherited
 
 -- The goal that admits declaration `c`, whose terms are `items` in the order
 -- of `declTerms`. A block has one output, the info of its families.
@@ -630,24 +789,58 @@ checkUniverseScope kernel limits env
 
 checkConsistency :: (TermNode -> TermNode) -> Mode -> Kernel -> Limits -> Env -> UniverseContext -> IO (Either Refusal ())
 checkConsistency scope mode kernel limits env context = do
-    let output = LV_Named "UniverseConsistency"
-        request = foldlNApp (named "u_satisfiable")
-            [natural (toInteger (length (universeNames context))), embedUniverseConstraints (universeConstraints context), mkLVar output]
-        inconsistent = KernelRejected (Just (Report "U-Context" [] []))
+    let request = foldlNApp (named "u_satisfiable") [count, localConstraints, mkLVar output]
     (prepared, _, reason) <- run mode kernel limits env [] (scope request) [output]
     case prepared of
-        Admitted [syntax] -> case universeFormula syntax of
-            Left message -> return (Left (KernelUndecided message))
-            Right formula -> do
-                (checked, _, _) <- run mode kernel limits env [] formula []
-                return $ case checked of
-                    Admitted [] -> Right ()
-                    Rejected _ -> Left inconsistent
-                    Undecided message -> Left (KernelUndecided message)
-                    _ -> Left (KernelUndecided "universe consistency returned unexpected outputs")
+        Admitted [syntax] -> do
+            verdict <- decide syntax
+            case verdict of
+                Admitted [] -> return (Right ())
+                Rejected _ -> Left <$> explain
+                Undecided message -> return (Left (KernelUndecided message))
+                _ -> return (Left (KernelUndecided "universe consistency returned unexpected outputs"))
         Rejected report -> return (Left (rejection report reason))
         Undecided message -> return (Left (KernelUndecided message))
         _ -> return (Left (KernelUndecided "the kernel did not return one closed universe formula"))
+    where
+        count = natural (toInteger (length (universeNames context)))
+        localConstraints = embedUniverseConstraints (universeConstraints context)
+        output = LV_Named "UniverseConsistency"
+        refused fields = KernelRejected (Just (Report "U-Context" (map fst fields) (map (Just . snd) fields)))
+        decide syntax = case universeFormula syntax of
+            Left message -> return (Undecided message)
+            Right formula -> do
+                (checked, _, _) <- run mode kernel limits env [] formula []
+                return checked
+        -- Admission has already failed. Ask the same Presburger checker for
+        -- the first edge that makes the ordered imported + local graph
+        -- inconsistent. An incomplete diagnostic cannot change that verdict.
+        explain = do
+            let slots = LV_Named "DiagnosticLevelSlots"
+                edges = LV_Named "DiagnosticLevelEdges"
+                graph = foldlNApp (named "u_global_graph") [mkLVar slots, mkLVar edges, localConstraints]
+            (result, _, _) <- run mode kernel limits env [] (scope graph) [slots, edges]
+            case result of
+                Admitted [variables, combined] | Right allEdges@(_ : _) <- recoverList combined ->
+                    offending variables allEdges 0 (length allEdges)
+                _ -> return (refused [])
+        offending variables edges low high
+            | low + 1 >= high = return (case recoverConstraint (edges !! low) of
+                Right edge -> refused [(display (edges !! low), ReportConstraint (universeNames context) "conflicting universe constraint" edge)]
+                Left _ -> refused [])
+            | otherwise = do
+                let middle = low + (high - low) `div` 2
+                    prefix = embedList (kindOf "uconstraint") (take middle edges)
+                    goal = foldlNApp (named "u_global_formula") [variables, count, prefix, mkLVar output]
+                (prepared, _, _) <- run mode kernel limits env [] (scope goal) [output]
+                case prepared of
+                    Admitted [syntax] -> do
+                        verdict <- decide syntax
+                        case verdict of
+                            Admitted [] -> offending variables edges middle high
+                            Rejected _ -> offending variables edges low middle
+                            _ -> return (refused [])
+                    _ -> return (refused [])
 
 -- The environment grows only after a run of the kernel has admitted the
 -- declaration. [I-Fresh] and the freshness of [D-Ax], [D-Def] and [D-Thm] are

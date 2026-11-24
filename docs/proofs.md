@@ -1,5 +1,7 @@
 # Proving a theorem in the terminal
 
+[Using Next, Previous and Check to Cursor in VS Code](v1.md#editor)
+
 **English** · [한국어](proofs.ko.md)
 
 ## Read a goal, try a tactic, and undo it

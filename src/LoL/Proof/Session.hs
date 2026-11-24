@@ -7,8 +7,8 @@
 module LoL.Proof.Session
     ( ProofSession, RequestId, StateId, GoalId (..), ProofView (..)
     , LocalBinding (..), ProofFailure (..), ProofReply (ProofAdvanced, ProofRestored, ProofAborted), restoredCode
-    , startProof, startProofWithUniverses, startProofWithStatement, submitProof, restoreProof, pruneProofHistory, configureProofHistory, cancelProof, closeProof
-    , extendAfterAdmission, completedProposal, completedTheorem, describeUnsettled, describeRefusedStep, describeProofFailure, distinct
+    , startProof, startProofWithUniverses, startProofWithStatement, startSectionProof, submitProof, restoreProof, pruneProofHistory, configureProofHistory, cancelProof, closeProof
+    , extendAfterAdmission, completedProposal, completedTheorem, describeUnsettled, describeRefusedStep, describeProofFailure, distinct, inspectTerm
     ) where
 
 import Control.Concurrent
@@ -18,7 +18,7 @@ import qualified Control.Monad.Trans.Class as Trans
 import qualified Control.Monad.Trans.State.Strict as State
 import qualified Data.Graph as Graph
 import Data.IORef
-import Data.List (find, sortOn)
+import Data.List (elemIndex, find, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import Data.Ord (Down (..))
@@ -28,9 +28,11 @@ import qualified Hol.V2.Embedding as Hol
 import qualified LoL.Core as Core
 import qualified LoL.Diagnostic as Diagnostic
 import qualified LoL.Env as Env
+import qualified LoL.Front.ArgumentScopes as ArgScopes
 import qualified LoL.Front.Fixity as Fixity
 import qualified LoL.Front.Syntax as Front
 import qualified LoL.Hol.Elab as Elab
+import qualified LoL.Hol.Embed as Embed
 import LoL.Hol.Embed (Info (..), Report (..), binderHint, binderOf, embedList, embedTerm, embedUniverseConstraints, kindOf, named, natural, recoverList, recoverOpenList, recoverReport, recoverString, recoverTerm, recoverUniverseConstraints, reifyUniverseSlots, scopedUniverseSlots, termType, universePool)
 import qualified LoL.Hol.Session as Kernel
 import qualified LoL.Proof.Command as Command
@@ -77,6 +79,14 @@ data ProofView
         , proofTheorem            :: !(Maybe (Either [String] (Core.UniverseContext, Core.Term, [Core.Level])))
         }
     deriving ()
+
+-- Recover the same proof-local indices and universe slots for the goal
+-- display and for read-only searches in this debugger view.
+inspectTerm :: ProofView -> Hol.TermNode -> Either String Core.Term
+inspectTerm view value = do
+    slots <- scopedUniverseSlots (proofUniversePool view) (proofUniverseParameters view)
+    reified <- reifyUniverseSlots slots value
+    Embed.recoverWith (\term -> elemIndex term (map localValue (proofLocals view))) [] reified
 
 -- proofUniverses names the universes that a view shows: those of the
 -- statement, and then the universes of the proof that are still open, `_0`,
@@ -203,7 +213,7 @@ data Focus
 -- as it is written (p_universe_statement).
 data Start
     = StartClosed Core.UniverseContext Core.Term
-    | StartStatement Elab.Statement [String]
+    | StartStatement Elab.Statement [String] [Core.ConstId]
     deriving ()
 
 -- What the end of a proof gave.
@@ -331,7 +341,10 @@ startProofWithUniverses base program limits environment universes expected
 -- `introduced` are the names of the binders of the header: they are in the
 -- context of the first goal, as in Rocq.
 startProofWithStatement :: Kernel.Kernel -> Kernel.Kernel -> Kernel.Limits -> Env.Env -> Core.UniverseContext -> Elab.Statement -> [String] -> IO (Either ProofFailure (ProofSession, ProofView))
-startProofWithStatement base program limits environment universes statement introduced = startWith base program limits environment universes (StartStatement statement introduced)
+startProofWithStatement base program limits environment universes statement introduced = startSectionProof base program limits environment universes statement introduced []
+
+startSectionProof :: Kernel.Kernel -> Kernel.Kernel -> Kernel.Limits -> Env.Env -> Core.UniverseContext -> Elab.Statement -> [String] -> [Core.ConstId] -> IO (Either ProofFailure (ProofSession, ProofView))
+startSectionProof base program limits environment universes statement introduced section = startWith base program limits environment universes (StartStatement statement introduced section)
 
 startWith :: Kernel.Kernel -> Kernel.Kernel -> Kernel.Limits -> Env.Env -> Core.UniverseContext -> Start -> IO (Either ProofFailure (ProofSession, ProofView))
 startWith base program limits environment universes begin = mask $ \restore -> do
@@ -469,11 +482,11 @@ runWorker handle cell first base program limits environment begin = do
         when (Map.member (Hol.DC_Named "p_root_names") (Kernel.kernelTypes program)) $ do
             let hints = case begin of
                     StartClosed _ typ -> Elab.coreHints typ
-                    StartStatement statement _ -> Elab.statementHints statement
+                    StartStatement statement _ _ -> Elab.statementHints statement
                 fact = Hol.mkNApp (named "p_root_names") hints
             checked (Hol.extendEngine engine [fact])
         case begin of
-            StartStatement statement _
+            StartStatement statement _ _
                 | Kernel.kernelBundled program
                 , Just typ <- Elab.statementCore statement
                 , let raw = Hol.TyCon (Hol.TCon (Hol.TC_Named "raw") Hol.Star)
@@ -496,13 +509,16 @@ runWorker handle cell first base program limits environment begin = do
                 StartClosed universeContext _
                     | universeContext == Core.emptyUniverses -> [Hol.LV_Named "ProofResult"]
                 StartClosed _ _ -> map Hol.LV_Named ["ProofStatus", "ProofUniverseCount", "ProofUniverseConstraints", "ProofStatement", "ProofResult"]
-                StartStatement _ _ -> map Hol.LV_Named ["ProofStatus", "ProofUniverseCount", "ProofUniverseConstraints", "ProofStatement", "ProofResult", "ProofMarks"]
+                StartStatement _ _ _ -> map Hol.LV_Named ["ProofStatus", "ProofUniverseCount", "ProofUniverseConstraints", "ProofStatement", "ProofResult", "ProofMarks"]
             goal = case begin of
                 StartClosed universeContext expected
                     | universeContext == Core.emptyUniverses -> Hol.foldlNApp (named "p_start") (embedTerm expected : map Hol.mkLVar outputs)
                 StartClosed universeContext expected -> Hol.foldlNApp (named "p_universe_start")
                     ([natural (toInteger (length (Core.universeNames universeContext))), embedUniverseConstraints (Core.universeConstraints universeContext), embedTerm expected] ++ map Hol.mkLVar outputs)
-                StartStatement statement introduced -> Hol.foldlNApp (named "p_universe_statement") (Elab.statementPrefix statement ++ [Elab.statementRaw statement, embedList (kindOf "ptac") [Hol.foldlNApp (named "p_universe_command") [embedList (kindOf "nat") [], Hol.mkNApp (named "p_intros") (embedList (Hol.mkNApp (kindOf "list") (kindOf "char")) (map (embedList (kindOf "char") . map (Hol.mkNCon . Hol.DC_ChrL)) introduced))] | not (null introduced)]] ++ map Hol.mkLVar outputs)
+                StartStatement statement introduced section -> withSection section $ Hol.foldlNApp (named "p_universe_statement") (Elab.statementPrefix statement ++ [Elab.statementRaw statement, embedList (kindOf "ptac") [Hol.foldlNApp (named "p_universe_command") [embedList (kindOf "nat") [], Hol.mkNApp (named "p_intros") (embedList (Hol.mkNApp (kindOf "list") (kindOf "char")) (map (embedList (kindOf "char") . map (Hol.mkNCon . Hol.DC_ChrL)) introduced))] | not (null introduced)]] ++ map Hol.mkLVar outputs)
+            withSection section query = foldr assume query facts where
+                facts = concat [[Hol.foldlNApp (named "p_name") [nameTerm (Env.entryName entry), value], Hol.foldlNApp (named "p_name_type") [value, embedTerm typ]] | c <- section, Just entry <- [Map.lookup c (Env.envDecls environment)], Env.Axiom typ <- [Env.entryDecl entry], let value = embedTerm (Core.Cst c [])]
+                assume fact body = Hol.foldlNApp (Hol.mkNCon Hol.LO_imply) [fact, body]
             config = Hol.defaultHostConfig
                 { Hol.hostDebug = paused handle cell first program environment constructorBound limits
                 , Hol.hostOracle = \_ context question -> oracle context question
@@ -1183,7 +1199,7 @@ encodeTactic environment constructorBound universes involved origin locals legac
         following start positions = maybe start ((+ 1) . fst) (Map.lookupMax positions)
         encode deferred start term = do
             (frontier, earlier) <- State.get
-            rewritten <- Trans.lift (either (Left . ProofDiagnostic) Right (Fixity.rewrite environment term))
+            rewritten <- Trans.lift (either (Left . ProofDiagnostic) Right (Fixity.rewrite (ArgScopes.withoutNames environment [Front.Name (Front.termSpan term) n | (n,_) <- references]) term))
             let mode = if deferred then Elab.DeferredProof (length references) aliases else Elab.EagerProof
                 context = if universes /= Core.emptyUniverses || Elab.needsUniverses environment rewritten then Just universes else Nothing
             (encoded, next, kinds) <- Trans.lift (either (Left . ProofDiagnostic) Right (Elab.encodeProofWithUniverses mode environment start references context frontier rewritten))

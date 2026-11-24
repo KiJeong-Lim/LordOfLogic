@@ -1,5 +1,7 @@
 # Connect an editor to LoL
 
+[Installing the VS Code proof editor](../editors/vscode/README.md)
+
 **English** · [한국어](editor.ko.md)
 
 An editor can check an unsaved buffer one command at a time. Send `next` when
@@ -83,7 +85,7 @@ h : P
 Goal: P
 Goal after undo: P
 Complete after next: True
-The theorem was admitted.
+The theorem was accepted.
 ```
 
 After `intros P h.`, the goal is `P` and the local hypothesis `h` has that

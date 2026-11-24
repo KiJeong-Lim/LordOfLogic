@@ -15,7 +15,7 @@ Definition toggle (b : Bit) : Bit :=
     end.
 
 (* ~~ b is toggle b, at level 9, right associative. *)
-Notation "~~ $term" := toggle (at level 9, right associativity).
+Notation "~~ x" := (toggle x) (at level 9, right associativity).
 
 (* finish t is exact t. *)
 Tactic Notation "finish $term" := exact.

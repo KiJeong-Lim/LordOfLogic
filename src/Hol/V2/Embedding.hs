@@ -10,6 +10,7 @@ module Hol.V2.Embedding
     , _TotalVarBinding, _LeftConstraints, DebugReason (..), StepId (..)
     , DiagnosticMode (..), diagnosticWithModule, initialCache, prettyTerm, initial
     , Backend (..), Supply, newSupply, Program, programKinds, programTypes, programFacts, programWarnings
+    , ProgramInputs, programInputs, currentProgramInputs, cacheCompiler, prunePackets
     , emptyProgram, prepareProgram, inferGoalTypes, loadProgram, loadProgramCached, readPreparedFile, writePreparedFile, Engine, createEngine, createEngineWithLimit, forkEngine, extendEngine, extendModule, loadModuleIntoEngine
     , leaveEngine, closeEngine, withQuery, ProgramMark, markProgram, truncateProgram, closeProgramMark, Session, openSession, openSessionWithLimit, closeSession
     , withSession, withSessionFacts, withSessionFactsWithLimit, HostConfig (..), defaultHostConfig, Outcome (..)
@@ -51,8 +52,10 @@ import qualified Hol.V1.FullCompiler as Compiler
 import qualified Hol.V1.FullBytecode as Bytecode
 import Hol.V1.Checked (CheckedProgram, checkedProgram)
 import qualified Hol.V1.FullRuntime as Full
+import Hol.V2.Cache (prunePackets)
 import qualified Hol.V2.Cache as Cache
 import qualified Hol.V2.Typing as Typing
+import System.Directory (canonicalizePath)
 import System.Environment (lookupEnv)
 import qualified X.HigherMachine as Machine
 import X.HigherMachine (NativeStats (..))
@@ -149,6 +152,22 @@ data Program
         , programManifest :: Maybe Cache.Manifest
         }
     deriving ()
+
+-- A host can retain these inputs to recognise a prepared source program on a
+-- later run. The compiler identity is obtained separately from its Supply.
+newtype ProgramInputs = ProgramInputs Cache.Manifest deriving (Eq, Read, Show)
+
+programInputs :: Program -> Maybe ProgramInputs
+programInputs program = do
+    inputs <- programManifest program
+    return (ProgramInputs inputs { Cache.manifestWarnings = [], Cache.manifestCompiler = "" })
+
+currentProgramInputs :: FilePath -> ProgramInputs -> IO Bool
+currentProgramInputs requested (ProgramInputs inputs) = do
+    resolved <- canonicalizePath requested
+    if resolved /= Cache.manifestMain inputs then return False else do
+        result <- Cache.checkSources inputs
+        return (either (const False) (const True) result)
 
 programKinds :: Program -> KindEnv
 programKinds = storedKinds

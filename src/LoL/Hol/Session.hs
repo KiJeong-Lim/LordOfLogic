@@ -239,6 +239,13 @@ groundRun kernel limits facts goal outputs
     | Set.null (getLVars facts) && Set.isSubsetOf (getLVars goal) (Set.fromList outputs) = runGoal kernel limits facts goal outputs
     | otherwise = return (Undecided "the query has a logic variable that is not an output")
 
+-- Opt in once when loading a LoL host engine. Direct Hol clients keep the
+-- specified rep L Ts report, and a historical kernel needs no extra fact.
+diagnosticFacts :: Kernel -> [TermNode] -> [TermNode]
+diagnosticFacts kernel facts
+    | Map.member (DC_Named "report_descriptions") (kernelTypes kernel) = named "report_descriptions" : facts
+    | otherwise = facts
+
 runGoal :: Kernel -> Limits -> [TermNode] -> TermNode -> [LogicVar] -> IO Verdict
 runGoal kernel limits facts goal outputs = hostVerdict limits $ do
     printed <- newIORef []
@@ -250,7 +257,7 @@ runGoal kernel limits facts goal outputs = hostVerdict limits $ do
             inferred <- inferGoalTypes (kernelFresh kernel) (kernelReady kernel) goal
             case inferred of
                 Left failure -> return (Left failure)
-                Right (typed, variables) -> withSessionFactsWithLimit (limitBytes limits) Native (kernelFresh kernel) (kernelReady kernel) facts variables typed (runtimeConfig kernel printed) (firstAnswer kernel limits)
+                Right (typed, variables) -> withSessionFactsWithLimit (limitBytes limits) Native (kernelFresh kernel) (kernelReady kernel) (diagnosticFacts kernel facts) variables typed (runtimeConfig kernel printed) (firstAnswer kernel limits)
 
 -- A ground run on the cached engine, which holds the kernel and the facts of
 -- the environment `source`. `facts` are all the facts of that environment: they
@@ -296,7 +303,7 @@ engineRun cache kernel limits source facts goal outputs
                 case created of
                     Left message -> return (Left message)
                     Right engine -> do
-                        extended <- extendAll engine facts
+                        extended <- extendAll engine (diagnosticFacts kernel facts)
                         either (\message -> Left message <$ Full.closeEngine engine) (\() -> return (Right (Loaded engine source))) extended
         -- Prepare the independent oracle machine before borrowing the main
         -- engine for a query. Never wait for another dialogue's aside cache.
@@ -339,7 +346,7 @@ forkWithNames kernel limits source names facts = withCache (kernelCache kernel) 
             case made of
                 Left failure -> return (Left failure)
                 Right engine -> do
-                    extended <- add engine facts `onException` voidClose engine
+                    extended <- add engine (diagnosticFacts kernel facts) `onException` voidClose engine
                     either (\failure -> Left failure <$ Full.closeEngine engine) (\() -> return (Right (maybe (Loaded engine source) (PreparedProof engine source) names))) extended
     case synchronized of
         Left failure -> return (Nothing, Left failure)

@@ -94,7 +94,7 @@ interactive limits path = withTerminalInterrupts $ withExecutor limits $ \execut
         Just (_, message) -> hPutStrLn stderr ("LoL: " ++ message) >> exitFailure
         Nothing -> do
             next <- newIORef 2
-            putStrLn "LoL BETA. End commands with a period. Use :next, :run, :discard, :save PATH, or :quit."
+            putStrLn "LoL V1. End commands with a period. Use :next, :run, :discard, :save PATH, or :quit."
             when (path /= Nothing) (putStrLn "The source is open at its first command; use :next or :run.")
             loop executor next ""
     where

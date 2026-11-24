@@ -1,0 +1,67 @@
+{
+    "name": "lord-of-logic",
+    "displayName": "Lord of Logic",
+    "description": "Check a LoL proof to the cursor and inspect its hypotheses and goal.",
+    "version": "1.0.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/KiJeong-Lim/LordOfLogic.git",
+        "directory": "editors/vscode"
+    },
+    "vsce": { "baseContentUrl": "https://github.com/KiJeong-Lim/LordOfLogic/blob/main/editors/vscode" },
+    "publisher": "lord-of-logic",
+    "license": "BSD-3-Clause",
+    "engines": { "vscode": "^1.85.0" },
+    "categories": ["Programming Languages"],
+    "extensionKind": ["workspace"],
+    "capabilities": {
+        "untrustedWorkspaces": { "supported": false },
+        "virtualWorkspaces": { "supported": false }
+    },
+    "main": "./extension.js",
+    "contributes": {
+        "languages": [
+            { "id": "lord-of-logic", "aliases": ["Lord of Logic"], "extensions": [".lol"] }
+        ],
+        "commands": [
+            { "command": "lordOfLogic.check", "title": "Check to Cursor", "category": "LoL", "enablement": "editorLangId == lord-of-logic", "icon": "$(play)" },
+            { "command": "lordOfLogic.next", "title": "Next Command", "category": "LoL", "enablement": "editorLangId == lord-of-logic", "icon": "$(debug-step-over)" },
+            { "command": "lordOfLogic.undo", "title": "Previous Command", "category": "LoL", "enablement": "editorLangId == lord-of-logic", "icon": "$(debug-step-back)" },
+            { "command": "lordOfLogic.cancel", "title": "Cancel Checking", "category": "LoL", "icon": "$(circle-slash)" },
+            { "command": "lordOfLogic.stop", "title": "Stop Proof Session", "category": "LoL", "icon": "$(debug-stop)" }
+        ],
+        "views": {
+            "explorer": [
+                { "id": "lordOfLogic.proof", "name": "LoL Proof", "when": "lordOfLogic.active" }
+            ]
+        },
+        "menus": {
+            "editor/title": [
+                { "command": "lordOfLogic.check", "when": "editorLangId == lord-of-logic", "group": "navigation@20" }
+            ],
+            "view/title": [
+                { "command": "lordOfLogic.undo", "when": "view == lordOfLogic.proof", "group": "navigation@1" },
+                { "command": "lordOfLogic.next", "when": "view == lordOfLogic.proof", "group": "navigation@2" },
+                { "command": "lordOfLogic.cancel", "when": "view == lordOfLogic.proof", "group": "navigation@3" }
+            ]
+        },
+        "configuration": {
+            "title": "Lord of Logic",
+            "properties": {
+                "lordOfLogic.executable": {
+                    "type": "string",
+                    "default": "lol",
+                    "scope": "resource",
+                    "description": "LoL executable on PATH or its absolute path. It is started in the file's workspace folder."
+                },
+                "lordOfLogic.arguments": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": ["--server"],
+                    "scope": "resource",
+                    "description": "Arguments for starting the LoL protocol 2 server."
+                }
+            }
+        }
+    }
+}

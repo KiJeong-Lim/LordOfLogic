@@ -5,10 +5,12 @@ module LoL.Proof.Command where
 import Control.Monad (unless)
 import Data.Array ((!), accumArray, listArray)
 import qualified Data.Set as Set
+import qualified LoL.Front.HostLexer as Host
 import qualified LoL.Front.Grammar as Grammar
 import qualified LoL.Front.Parse as Parse
 import LoL.Core (Global)
 import qualified LoL.Front.Notation as Notation
+import qualified LoL.Front.RocqNotation as RocqNotation
 import qualified LoL.Front.Syntax as Front
 
 type Span = Front.Span
@@ -119,7 +121,7 @@ parseCommandAtWith = parseCommandAtIndexed . Notation.fromRules
 
 parseCommandAtIndexed :: Notation.Rules -> Front.Position -> String -> Either Front.FrontError (Maybe Command)
 parseCommandAtIndexed rules origin source = do
-    tokens <- proofTokens origin source
+    tokens <- Parse.branching <$> Host.lexHostWith (Notation.termLiterals rules) origin source
     case tokens of
         [] -> Right Nothing
         _ -> do
@@ -142,6 +144,9 @@ commandTokensIndexed :: Notation.Rules -> [Front.Token] -> Either Front.FrontErr
 commandTokensIndexed rules tokens
     = case tokens of
         first : _
+            | RocqNotation.handles rules tokens -> ordinary
+            | Parse.sectionHead first -> ordinary
+            | text first == "Search" -> ordinary
             | text first `elem` ["Theorem", "Lemma"] -> headerOrOrdinary
             | text first == "Polymorphic", second : _ <- drop 1 tokens, text second `elem` ["Theorem", "Lemma"] -> headerOrOrdinary
             | Front.tokenKind first `elem` Parse.keywords || Front.tokenKind first == "#[" || text first == "Record" || Notation.isDeclaration tokens -> ordinary

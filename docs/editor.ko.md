@@ -1,5 +1,7 @@
 # LoL을 편집기에 연결하기
 
+[VS Code 증명 편집기 설치](../editors/vscode/README.ko.md)
+
 [English](editor.md) · **한국어**
 
 편집기는 아직 저장하지 않은 버퍼에서도 명령을 하나씩 검사할 수 있다. 사용자가 다음 명령으로 진행하면 서버에 `next`를 보내고, 응답의 `proof`에서 가정과 목표를 읽어 화면에 표시한다.
@@ -74,7 +76,7 @@ h : P
 Goal: P
 Goal after undo: P
 Complete after next: True
-The theorem was admitted.
+The theorem was accepted.
 ```
 
 `intros P h.` 뒤에는 목표가 `P`이고, 타입이 `P`인 지역 가정 `h`가 있다. 클라이언트는 `exact h.`를 적용하기 전에 현재 **문서 상태**를 저장한다. 적용 직후 `show`를 보내면 `proof.complete`가 참인 것을 확인할 수 있고, 실행 커서는 그대로다. 이때 저장해 둔 상태를 `undo`로 복원하면 목표가 다시 열리고 커서는 `exact h.`의 시작점으로 돌아간다. **`undo` 응답의 새 문서 참조**로 `next`를 보내면 같은 명령을 한 번 더 검사한다.

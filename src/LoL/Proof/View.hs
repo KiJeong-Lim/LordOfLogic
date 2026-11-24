@@ -2,7 +2,6 @@
 module LoL.Proof.View where
 
 import Control.Monad.Trans.State.Strict
-import Data.List (elemIndex)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -11,7 +10,6 @@ import qualified LoL.Core as Core
 import qualified LoL.Diagnostic as Diagnostic
 import qualified LoL.Env as Env
 import qualified LoL.Front.Syntax as Front
-import qualified LoL.Hol.Embed as Embed
 import qualified LoL.Pretty as Pretty
 import qualified LoL.Proof.Document as Document
 import qualified LoL.Proof.Executor as Executor
@@ -460,21 +458,19 @@ displayUniverses state context
 displayTerm :: Module.ModuleState -> Proof.ProofView -> Hol.TermNode -> String
 displayTerm state view value
     | not (small 4000 [value]) = "<term display exceeds 4000 nodes>"
-    | otherwise = case levels >>= (\slots -> Embed.reifyUniverseSlots slots value) >>= Embed.recoverWith free [] of
+    | otherwise = case Proof.inspectTerm view value of
         Left _ -> Hol.prettyTerm Hol.initial Hol.initialCache value ""
         Right core -> case Pretty.printerFail printer depth core of
             Just _ -> Hol.prettyTerm Hol.initial Hol.initialCache value ""
             Nothing -> Pretty.pieceText (Pretty.printerShow printer depth scope core) ""
     where
-        levels = Embed.scopedUniverseSlots (Proof.proofUniversePool view) (Proof.proofUniverseParameters view)
         locals = Proof.proofLocals view
         universes = Proof.proofUniverses view
-        free term = elemIndex term (map Proof.localValue locals)
         aliases = map Proof.localName locals
         env = Module.displayEnvironment state (Module.environment state)
         base = Pretty.naming (Env.withNames (foldr Map.delete (Env.envNames env) aliases) env)
         naming = base { Pretty.namingUniverses = Pretty.universeHints base (Core.universeNames universes) }
-        printer = Pretty.printerOf Pretty.Surface naming
+        printer = Pretty.displayPrinter env naming
         depth = length locals
         scope = Pretty.Names (IntMap.fromList (zip [0 ..] (reverse aliases))) (Set.fromList aliases) Map.empty
         small _ [] = True

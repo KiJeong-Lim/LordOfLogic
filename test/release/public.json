@@ -1,0 +1,132 @@
+{
+    "Arithmetic.lol": {
+        "exit": 0,
+        "stdout": "The theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nSucc (Succ (Succ (Succ (Succ (Succ (Succ (Succ Zero)))))))\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Axioms.lol": {
+        "exit": 0,
+        "stdout": "The theorem was accepted.\nThe theorem was accepted.\nAxiom excluded_middle : forall P : Prop, or P (not P).\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Basics.lol": {
+        "exit": 0,
+        "stdout": "Nat -> Nat -> Nat\nSucc (Succ (Succ (Succ Zero)))\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Decisions.lol": {
+        "exit": 0,
+        "stdout": "forall n : nat, forall m : nat, Decidable (@eq nat n m)\ntrue\nfalse\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Equality.lol": {
+        "exit": 0,
+        "stdout": "The theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Library.lol": {
+        "exit": 0,
+        "stdout": "S (S (S O))\n@cons nat (S (S O)) (@cons nat (S O) (@cons nat (S (S (S O))) (nil nat)))\n@cons nat (S (S (S (S (S (S (S (S (S O))))))))) (@cons nat (S O) (@cons nat (S (S (S (S O)))) (nil nat)))\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Lists.lol": {
+        "exit": 0,
+        "stdout": "@cons nat (S O) (@cons nat (S (S O)) (@cons nat (S (S (S O))) (@cons nat (S (S (S O))) (@cons nat (S (S O)) (@cons nat (S O) (nil nat))))))\n@cons nat (S (S O)) (@cons nat (S (S (S (S O)))) (@cons nat (S (S (S (S (S (S O)))))) (nil nat)))\nS (S (S (S (S (S O)))))\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Logic.lol": {
+        "exit": 0,
+        "stdout": "The theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Mutual.lol": {
+        "exit": 0,
+        "stdout": "The theorem was accepted.\nThe theorem was accepted.\ntrue\nfalse\nThe theorem was accepted.\nS (S (S (S (S (S (S (S (S (S O)))))))))\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Notations.lol": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+    },
+    "Numbers.lol": {
+        "exit": 0,
+        "stdout": "S (S (S O))\nS (S O)\nS (S (S (S (S (S O)))))\nS (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S (S O)))))))))))))))))))))))\nThe theorem was accepted.\nforall n : nat, forall d : nat, @eq nat n (add (mul (div n d) d) (modulo n d))\nforall a : nat, forall b : nat, forall d : nat, lol.theories.Divisibility.divides d a -> lol.theories.Divisibility.divides d b -> lol.theories.Divisibility.divides d (gcd a b)\nforall n : nat, ex nat (fun p : nat => and (lt n p) (prime p))\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Records.lol": {
+        "exit": 0,
+        "stdout": "S O\nO\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "STLC.lol": {
+        "exit": 0,
+        "stdout": "The theorem was accepted.\nThe theorem was accepted.\nst_tt\nThe theorem was accepted.\nforall t : sterm, forall u : sterm, sstep t u -> forall G : sctx, forall A : sty, styping G t A -> styping G u A\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Sorting.lol": {
+        "exit": 0,
+        "stdout": "@cons nat (S O) (@cons nat (S (S O)) (@cons nat (S (S (S O))) (@cons nat (S (S (S (S (S O))))) (@cons nat (S (S (S (S (S O))))) (@cons nat (S (S (S (S (S (S (S (S (S O))))))))) (nil nat))))))\n@cons nat (S O) (@cons nat (S (S O)) (@cons nat (S (S (S O))) (@cons nat (S (S (S (S (S O))))) (@cons nat (S (S (S (S (S O))))) (@cons nat (S (S (S (S (S (S (S (S (S O))))))))) (nil nat))))))\nforall l : list nat, and (Sorted (insertion_sort l)) (@Permutation nat l (insertion_sort l))\nforall l : list nat, and (Sorted (merge_sort l)) (@Permutation nat l (merge_sort l))\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Syntax.lol": {
+        "exit": 0,
+        "stdout": "High\nLow\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Tacticals.lol": {
+        "exit": 0,
+        "stdout": "The theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "Universes.lol": {
+        "exit": 0,
+        "stdout": "Type@{1}\nType@{1}\nType@{2}\nforall x : Type@{0}, x -> x\nforall x : Type@{1}, x -> x\nb1\nBit\n",
+        "stderr": ""
+    },
+    "UserTactics.lol": {
+        "exit": 0,
+        "stdout": "The tactic program was loaded.\nThe theorem was accepted.\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "V1.lol": {
+        "exit": 0,
+        "stdout": "example.V1.twice : forall A : Type@{0}, (A -> A -> A) -> A -> A\nforall A : Type@{0}, (A -> A -> A) -> A -> A\nThe theorem was accepted.\n",
+        "stderr": ""
+    },
+    "V1Scopes.lol": {
+        "exit": 0,
+        "stdout": "red\nblue\nexample.V1Scopes.keep_left : forall A : Type@{0}, A -> A -> A\nexample.V1Scopes.keep_right : forall A : Type@{0}, A -> A -> A\nThe theorem was accepted.\n",
+        "stderr": ""
+    },
+    "Vectors.lol": {
+        "exit": 0,
+        "stdout": "forall A : Type@{0}, forall n : nat, vec A (S n) -> A\nS O\n@cons nat (S (S O)) (@cons nat (S (S (S O))) (nil nat))\n@cons nat (S O) (@cons nat (S (S O)) (@cons nat (S (S (S O))) (@cons nat (S O) (@cons nat (S (S O)) (@cons nat (S (S (S O))) (nil nat))))))\n@cons nat (S (S (S O))) (@cons nat (S (S O)) (@cons nat (S O) (nil nat)))\nThe theorem was accepted.\n(* No assumptions. *)\n",
+        "stderr": ""
+    },
+    "rejected/Elimination.lol": {
+        "exit": 1,
+        "stdout": "<examples>/rejected/Elimination.lol:10:1-14:8: error: [LoL-KernelError]\n10 | Definition which (h : or True True) : bool :=\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n11 |     match h with\n   | ^^^^^^^^^^^^^^^^\n12 |     | or_introl _ _ a => true\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n13 |     | or_intror _ _ b => false\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n14 |     end.\n   | ^^^^^^^^\n[I-Elim-Prop] the kernel rejected this command\n  inductive family: or\n  return sort: Type@{0}\n\n",
+        "stderr": ""
+    },
+    "rejected/Guard.lol": {
+        "exit": 1,
+        "stdout": "<examples>/rejected/Guard.lol:9:1-9:50: error: [LoL-KernelError]\n   |                                                   \n 9 | Fixpoint forever (n : nat) : nat := forever (S n).\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n[F-Guard] the kernel rejected a component during elaboration\n  the oracle says: a recursive call is not on a term that is smaller than the struct argument (the call is of function 1 of the block, whose struct argument is argument 1)\n\n",
+        "stderr": ""
+    },
+    "rejected/Positivity.lol": {
+        "exit": 1,
+        "stdout": "<examples>/rejected/Positivity.lol:10:1-10:55: error: [LoL-KernelError]\n    |                                                        \n 10 | Inductive Bad : Type := | wrap : (Bad -> Empty) -> Bad.\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n[I-Pos] the oracle rejected this command\n  the oracle says: a family of the block occurs where it is not strictly positive\n\n",
+        "stderr": ""
+    },
+    "rejected/Proof.lol": {
+        "exit": 1,
+        "stdout": "The theorem was accepted.\n<examples>/rejected/Proof.lol:19:5-19:16: error: [LoL-ProofError]\n    |                 \n 19 |     reflexivity.\n    |     ^^^^^^^^^^^^\n[P-StepFailed] The proof step failed.\n  reflexivity.\n\n",
+        "stderr": ""
+    },
+    "rejected/Universe.lol": {
+        "exit": 1,
+        "stdout": "<examples>/rejected/Universe.lol:7:1-7:45: error: [LoL-KernelError]\n   |                                              \n 7 | Definition Everything : Type@{0} := Type@{0}.\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n[T-Conv] the kernel rejected this command\n  term: Type@{0}\n  has type: Type@{1}\n  expected: Type@{0}\n\n",
+        "stderr": ""
+    }
+}

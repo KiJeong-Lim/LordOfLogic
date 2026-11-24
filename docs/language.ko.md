@@ -1,5 +1,7 @@
 # LoL에서 타입과 함수 정의하기
 
+[V1 표기 스코프, custom entry와 절 변수](v1.ko.md)
+
 [English](language.md) · **한국어**
 
 프로젝트 루트에 `Walkthrough.lol`을 만들고 아래 LoL 예제를 차례로 추가한다. 중간에 `ReadPublic.lol`로 표시한 예제만 두 번째 파일에 쓴다. 각 단계를 마칠 때마다 프로젝트 루트에서 다음 명령으로 결과를 확인한다. `Check`는 식의 타입을, `Compute`는 식을 계산한 값을 출력한다.
@@ -52,7 +54,7 @@ Compute @keep Height three 1.
 ## 항 표기와 전술 표기
 
 ```lol
-Local Notation "taller $term" := up (at level 9, right associativity).
+Local Notation "'taller' x" := (up x) (at level 9, right associativity).
 Local Tactic Notation "closewith $term" := exact.
 
 Compute taller base.
@@ -65,7 +67,7 @@ Qed.
 Print Assumptions retain.
 ```
 
-항에서 `taller base`의 계산 결과는 `up base`다. 증명 안에서 `closewith h.`는 `exact h.`를 실행한다. `Qed.` 뒤에 `Print Assumptions retain.`을 실행하면 `(* No assumptions. *)`가 나온다.
+항에서 `taller base`의 계산 결과는 `up base`다. 이 값은 현재 활성화된 표기로 `taller base`라고 출력된다. 증명 안에서 `closewith h.`는 `exact h.`를 실행한다. `Qed.` 뒤에 `Print Assumptions retain.`을 실행하면 `(* No assumptions. *)`가 나온다.
 
 다른 모듈에서 앞서 정의한 덧셈을 쓰려면 `Walkthrough.lol`과 같은 디렉터리에 **별도 파일 `ReadPublic.lol`**을 만들고 다음 두 줄을 넣는다. `cabal run -v0 lol -- ReadPublic.lol`을 실행하면 `up (up (up base))`가 나온다. `Local`로 선언한 `taller`와 `closewith`는 `Walkthrough.lol` 안에서만 쓸 수 있다.
 
@@ -90,7 +92,7 @@ Check unpack.
 Compute unpack sample.
 ```
 
-`pack Height three`에서 `carrier`에 넣은 타입은 `Height`다. 따라서 `point`에는 `Height`의 값을 넣어야 한다. 임의의 `p : Package`에 대해 `p.(point)`의 타입은 `p.(carrier)`다. `Check unpack.`은 `forall x : Package, x.(carrier)`를, `Compute unpack sample.`은 `up (up (up base))`를 출력한다.
+`pack Height three`에서 `carrier`에 넣은 타입은 `Height`다. 따라서 `point`에는 `Height`의 값을 넣어야 한다. 임의의 `p : Package`에 대해 `p.(point)`의 타입은 `p.(carrier)`다. `Check unpack.`은 `forall x : Package, x.(carrier)`를, `Compute unpack sample.`은 지역 표기를 써서 `taller taller taller base`를 출력한다.
 
 `#[projections(primitive)]`는 이 레코드에 원시 투영을 지정한다. 모든 필드를 투영한 값으로 레코드를 다시 만들면 원래 레코드와 정의적으로 같다. 이 성질을 레코드의 η(에타)라고 한다. `swap_swap` 예제는 이 성질 덕분에 `intros` 다음에 `reflexivity.`만으로 증명을 마친다. [레코드와 투영 예제](../example/Records.lol)
 

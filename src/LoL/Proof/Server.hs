@@ -131,7 +131,7 @@ serve input output logging handlers = mask $ \restore -> do
         ready = Json.object
             [ ("protocol", Json.Integer Protocol.protocolVersion)
             , ("event", Json.String "ready")
-            , ("message", Json.String "LoL BETA server is ready.")
+            , ("message", Json.String "LoL V1 server is ready.")
             , ("requestByteLimit", Json.Integer (toInteger Json.messageBytes))
             , ("positionEncoding", Json.String "unicode-scalar-1-based")
             ]

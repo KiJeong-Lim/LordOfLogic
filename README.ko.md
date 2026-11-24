@@ -1,14 +1,26 @@
 # LoL
 
+[V1 표기 스코프와 custom entry, Search, Section, VS Code 증명 편집기](docs/v1.ko.md)
+
 [English](README.md) · **한국어**
 
 LoL은 귀납적 구성 계산(Calculus of Inductive Constructions)에 기반한 증명 보조기다. 커널은 λProlog로 작성했고 이 저장소의 λProlog 엔진인 Hol이 실행한다. Haskell 호스트는 사용자의 명령을 읽고 모듈과 객체를 관리하며 Hol을 호출한다. 환원·변환·타이핑 규칙은 커널이 담당한다. [커널 소스](lol/hol/kernel.hol)
 
 LoL의 표면 문법은 Rocq를 따른다. `Inductive`, `Record`, `Fixpoint`, `match`, `Theorem … Proof. … Qed.`를 쓸 수 있고, 표기와 전술을 정의할 수 있다. 검사를 마친 모듈은 Rocq 소스로 내보낼 수 있다.
 
+커널의 판단은 Hol 컴파일러와 C 가상 기계, 단일화·GC·FFI, 엄격 양성과 가드
+오라클, 우주 제약 결정 절차와 항·환경의 번역에도 의존한다. 로컬 릴리스 검사는 라이브러리와
+양성 예제의 export를 Rocq 9.2.0으로 다시 검사하고, 정상 예제를 ASan·UBSan으로
+검사한다. [릴리스 검사 재현](docs/verification.ko.md)
+
 처음 증명을 써 본다면 [터미널 증명 실습](docs/proofs.ko.md)에서 `:next`로 파일을 한 명령씩 실행하고 `Undo.`로 전술을 되돌려 보자. 기능별 사용법은 [타입과 함수 정의하기](docs/language.ko.md), [모듈·객체·Rocq 내보내기](docs/modules.ko.md), [편집기 연동](docs/editor.ko.md)에 있다. 전체 명령과 구현 파일의 위치는 [저장소 레퍼런스 북(영문)](docs/reference.md)에서 찾을 수 있다.
 
 ## 빌드하기
+
+패키지는 `filepath >= 1.4`를 사용하며 로컬 새니타이저 검사에서 1.4로도 빌드한다. V1은 절과
+문맥을 지원하고 sort로 `Prop`, `Set`, `Type`을 쓴다. 공귀납 선언,
+cofixpoint와 엄격 명제 `SProp`의 타이핑은 이 버전의 범위 밖이다.
+`Admitted` 명령과 우주 검사를 끄는 옵션은 제공하지 않는다.
 
 Linux에서 GHC 9.6.7과 cabal-install 3.14.2로 빌드를 확인했다. 엔진의 C 코드를 빌드하려면 C11 컴파일러가 필요하다.
 
@@ -31,7 +43,7 @@ cabal run -v0 lol -- example/Basics.lol
 ```text
 Nat -> Nat -> Nat
 Succ (Succ (Succ (Succ Zero)))
-The theorem was admitted.
+The theorem was accepted.
 (* No assumptions. *)
 ```
 
@@ -69,6 +81,7 @@ example/rejected/Positivity.lol:10:1-10:55: error: [LoL-KernelError]
 | [`STLC.lol`](example/STLC.lol) | 단순 타입 람다 계산에서 타이핑 유도와 한 단계 환원을 살펴보고 타입 보존을 증명한다. |
 | [`Records.lol`](example/Records.lol) | 템플릿 우주와 원시 투영을 갖는 레코드를 정의하고 레코드의 정의적 η 법칙을 쓴다. |
 | [`Universes.lol`](example/Universes.lol) | `Prop`, `Set`, `Type@{i}`, 우주의 누적성, 우주 다형적인 정의를 다룬다. |
+| [`V1Scopes.lol`](example/V1Scopes.lol), [`V1.lol`](example/V1.lol) | 스코프가 바뀌면 같은 식에서 다른 값이 나오는 예, 사용자 정의 문법, 절 변수와 Search. |
 | [`Notations.lol`](example/Notations.lol), [`Syntax.lol`](example/Syntax.lol) | 한 모듈에서 항 표기와 전술 표기를 공개하고 다른 모듈에서 사용한다. |
 | [`UserTactics.lol`](example/UserTactics.lol), [`UserTactics.hol`](example/UserTactics.hol) | Hol로 전술 두 개를 작성하고 `Load Tactics`로 불러온다. |
 | [`Axioms.lol`](example/Axioms.lol) | 공리를 하나 선언하고, 그 공리를 쓰는 정리와 쓰지 않는 정리에 각각 `Print Assumptions`를 실행한다. |
@@ -87,7 +100,7 @@ example/rejected/Positivity.lol:10:1-10:55: error: [LoL-KernelError]
 
 ```text
 lol [OPTIONS] FILE.lol
-lol --check-only FILE.lolo
+lol --check-only [--no-axioms] FILE.lolo
 lol --interactive [FILE.lol]
 lol --server
 ```
@@ -99,7 +112,8 @@ lol --server
 | `--rocq` | 주 모듈의 Rocq 소스를 표준 출력에 쓴다. |
 | `--rocq-dir=DIR` | 주 모듈과 그 모듈이 가져온 모듈의 Rocq 소스를 `DIR` 아래에 쓴다. |
 | `--emit-object=FILE.lolo` | 검사한 모듈을 객체로 저장한다. 의존 객체는 그 옆의 숨김 디렉터리 `.lolo/`에 저장한다. |
-| `--check-only` | 원본 소스 없이 커널로 `.lolo` 객체를 다시 검사한다. |
+| `--check-only` | 객체와 의존 모듈을 다시 검사하고 각 선언과 정리별 가정을 출력한다. |
+| `--no-axioms` | `--check-only`와 함께 쓰며 검사 대상 어느 모듈에든 공리가 선언되어 있으면 실패한다. |
 | `--work-limit=N` | 엔진을 한 번 실행할 때 허용하는 작업량을 제한한다. |
 | `--timeout-ms=N` | 엔진 한 번의 실행 시간을 밀리초 단위로 제한한다. |
 | `--memory-mib=N` | 엔진의 메모리 사용량을 MiB 단위로 제한한다. |
@@ -164,9 +178,9 @@ Qed.
 **명령**
 
 - 선언에는 `Inductive`(상호 귀납 블록은 `with`), `Record`, `Definition`, `Fixpoint`, `Theorem`, `Lemma`, `Axiom`, `Polymorphic`를 쓴다.
-- 조회에는 `Check`, `Compute`, `Print Assumptions`를 쓴다.
-- 모듈을 가져올 때는 `Import`를 쓴다.
-- 표기와 인자 선언에는 `Infix`, `Notation`, `Tactic Notation`, `Arguments`, `Numerals`를 쓴다.
+- 조회에는 `Check`, `Compute`, `Print Assumptions`, `Search`를 쓴다.
+- 모듈을 가져올 때는 `Import`, 공통 가정을 묶을 때는 `Section`, `Context`, `End`를 쓴다.
+- 표기와 인자 선언에는 `Infix`, `Notation`, `Reserved Notation`, `Declare Scope`, `Open Scope`, `Declare Custom Entry`, `Tactic Notation`, `Arguments`, `Numerals`를 쓴다.
 - 증명 문서에서 `Proof`, `Qed`, `Show`, `Show Universes`, `Undo`, `Abort`, `Load Tactics`를 쓸 수 있다.
 
 **전술**
@@ -234,3 +248,14 @@ LoL은 컴파일한 Hol 프로그램을 `$XDG_CACHE_HOME/lol/hol-v2` 아래에 �
 ## 라이선스
 
 BSD 3-Clause. [라이선스 원문](LICENSE)
+
+## 검사한 모듈 다시 불러오기
+
+POSIX 환경에서 이미 수락한 소스 모듈은
+`$XDG_CACHE_HOME/lord-of-logic/imports` 아래의 전용 캐시에서 정교화된
+선언을 다시 쓸 수 있다. 기본 위치는 `~/.cache/lord-of-logic/imports`다.
+로더는 소스와 Hol 입력을 확인하고 의존 모듈을 찾은 뒤 저장된 선언을
+커널로 다시 검사한다. 캐시를 사용할 수 없으면 소스를 처리한다.
+`LOL_IMPORT_CACHE=off`는 소스로만 검사하며, `LOL_IMPORT_CACHE_TRACE=1`은
+캐시를 실제 사용한 모듈 이름을 표준 오류에 남긴다. Hol 프로그램을
+컴파일한 캐시는 별도의 `LOL_HOL_CACHE` 설정을 쓴다.

@@ -957,9 +957,9 @@ type p_u_pushed (list uconstraint -> list uconstraint -> o).
 type p_u_push (lvl -> lvl -> o).
 type p_u_up (lvl -> lvl -> o).
 p_u_context 1 Count Context OutCount Os OutContext :- !,
-    (e_at 0 => e_need (e_u_final_context 1 Count Context OutCount Os OutContext) "E-Declared" []).
+    (e_at 0 => e_need (e_u_report_context "E-Declared" 1 Count Context OutCount Os OutContext) "E-Declared" []).
 p_u_context Mode Count Context OutCount Os OutContext :- p_u_pushed Os Ps,
-    (e_at 0 => e_need (e_u_final_context Mode Count Context OutCount Ps OutContext) "E-Universes" []).
+    (e_at 0 => e_need (e_u_report_context "E-Universes" Mode Count Context OutCount Ps OutContext) "E-Universes" []).
 p_u_pushed [] [].
 p_u_pushed (uc_le L M :: Cs) (uc_le A B :: Ds) :- p_u_push L A, p_u_push M B, p_u_pushed Cs Ds.
 p_u_pushed (uc_eq L M :: Cs) (uc_eq A B :: Ds) :- p_u_push L A, p_u_push M B, p_u_pushed Cs Ds.

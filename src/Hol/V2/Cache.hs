@@ -1,5 +1,5 @@
 module Hol.V2.Cache
-    ( Manifest (..), manifestFor, cachePath, readCache, writeCache, compilerIdentity, pruneCache
+    ( Manifest (..), manifestFor, checkSources, cachePath, readCache, writeCache, compilerIdentity, pruneCache, prunePackets
     , cachePathWith, readCacheWith, writeCacheWith
     ) where
 
@@ -216,14 +216,17 @@ writeCacheWith compiler storage manifest0 program = ioResult $ case Wire.encode 
 -- it, or it is not this user's to manage. Counting it would remove the newer
 -- entries in its place.
 pruneCache :: FilePath -> IO ()
-pruneCache storage = void $ ioResult $ do
+pruneCache = prunePackets ".hpc"
+
+prunePackets :: String -> FilePath -> IO ()
+prunePackets extension storage = void $ ioResult $ do
     names <- listDirectory directory
     entries <- concat <$> mapM entry names
     discard (sum [size | (_, _, size) <- entries]) (length entries) (sortOn (\(time, path, _) -> (time, path)) entries)
     return (Right ())
     where
         directory = takeDirectory storage
-        owned name = takeExtension name == ".hpc" && length (dropExtension name) == 64 && all (`elem` "0123456789abcdef") (dropExtension name)
+        owned name = takeExtension name == extension && length (dropExtension name) == 64 && all (`elem` "0123456789abcdef") (dropExtension name)
         entry name
             | not (owned name) = return []
             | otherwise = do

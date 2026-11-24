@@ -35,7 +35,7 @@ LOL=$(cabal list-bin exe:lol)
 ```text
 nat -> nat
 S (S (S (S O)))
-The theorem was admitted.
+The theorem was accepted.
 (* No assumptions. *)
 ```
 
@@ -75,7 +75,10 @@ mkdir -p build/objects
 "$LOL" --check-only build/objects/Double.lolo
 ```
 
-숨김 디렉터리 `.lolo/`를 포함해 `build/objects` 전체를 전달한다. `Double.lolo`는 `.lolo/`에 있는 의존 객체를 해시값으로 참조한다. 받는 사람은 이 릴리스의 `lol/hol`이 있는 프로젝트 루트에서 복사한 `Double.lolo`의 경로를 `--check-only`에 준다. 커널은 원본 `Workshop/*.lol` 파일 없이도 주 객체와 의존 객체를 다시 검사한다. 성공하면 출력 없이 종료한다.
+숨김 디렉터리 `.lolo/`를 포함해 `build/objects` 전체를 전달한다. `Double.lolo`는 `.lolo/`에 있는 의존 객체를 해시값으로 참조한다. 받는 사람은 이 릴리스의 `lol/hol`이 있는 프로젝트 루트에서 복사한 `Double.lolo`의 경로를 `--check-only`에 준다. 커널은 원본 `Workshop/*.lol` 파일 없이도 주 객체와 의존 객체를 다시 검사한다. 성공하면 `Checked object Workshop.Double.` 뒤에 검사한 선언, 정리별
+전이적 가정(`Assumptions:`), 검사한 모든 모듈에 선언된 공리가 나온다.
+어느 모듈에서든 공리가 발견되면 실패하도록 하려면 `--no-axioms`를
+함께 준다. 정리에서 사용하지 않은 공리도 이 마지막 검사에 포함된다.
 
 ## Rocq로 내보내기
 
@@ -91,3 +94,14 @@ rocq compile -noinit -Q build/rocq '' build/rocq/Workshop/Double.v
 `-Q`의 빈 인자 `''`는 `build/rocq`를 논리 모듈 경로의 루트에 대응시킨다. 내보낸 코드에서 `lol.theories.Nat`을 가져오면 Rocq는 `build/rocq/lol/theories/` 아래에서 컴파일된 모듈을 찾는다.
 
 [저장소 레퍼런스 북(영문)](reference.md)
+
+## 검사한 모듈 다시 불러오기
+
+POSIX 환경에서 이미 수락한 소스 모듈은
+`$XDG_CACHE_HOME/lord-of-logic/imports` 아래의 전용 캐시에서 정교화된
+선언을 다시 쓸 수 있다. 기본 위치는 `~/.cache/lord-of-logic/imports`다.
+로더는 소스와 Hol 입력을 확인하고 의존 모듈을 찾은 뒤 저장된 선언을
+커널로 다시 검사한다. 캐시를 사용할 수 없으면 소스를 처리한다.
+`LOL_IMPORT_CACHE=off`는 소스로만 검사하며, `LOL_IMPORT_CACHE_TRACE=1`은
+캐시를 실제 사용한 모듈 이름을 표준 오류에 남긴다. Hol 프로그램을
+컴파일한 캐시는 별도의 `LOL_HOL_CACHE` 설정을 쓴다.

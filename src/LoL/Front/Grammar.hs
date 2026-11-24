@@ -11,6 +11,7 @@ data Grammar = Grammar
     { expression        :: Parser Term
     , groupedExpression :: Parser Term
     , reservedBinder    :: String -> Bool
+    , branchPattern     :: Parser Pattern
     }
 data Problem = Unexpected (Maybe Token) | Association Token deriving (Eq, Show)
 
@@ -93,7 +94,7 @@ startsAtom :: String -> Bool
 startsAtom kind = identifier kind || kind `elem` ["qualid", "@", "Prop", "Set", "Type", "numeral", "_", "("]
 
 fixed :: Grammar
-fixed = Grammar fixedTerm fixedTerm (const False)
+fixed = Grammar fixedTerm fixedTerm (const False) patternP
 
 parseRaw :: [Token] -> Either (Maybe Token) (Either Term [Command])
 parseRaw = parseRawWith fixed
@@ -113,10 +114,47 @@ readRaw grammar input = do
             first : _
                 | startsCommand (tokenKind first) -> Right <$> series startsCommand command
             _ -> Left <$> term
-        startsCommand kind = kind `elem` words "record-command Polymorphic Definition Theorem Lemma Axiom Check Compute Print Inductive Fixpoint Arguments Infix Numerals Import"
+        startsCommand kind = kind == "section-command" || kind `elem` words "record-command Polymorphic Definition Theorem Lemma Axiom Check Compute Print Inductive Fixpoint Arguments Infix Numerals Import"
 
 term :: Parser Term
 term = Parser $ \grammar -> runParser (expression grammar) grammar
+
+-- A Search item is an atom. Parentheses give its contents the same term
+-- grammar and active notation as any other command at this position.
+searchCommand :: Grammar -> [Token] -> Either Problem Command
+searchCommand grammar input = do
+    (result, rest) <- runParser search grammar input
+    case rest of
+        [] -> Right result
+        token : _ -> Left (Unexpected (Just token))
+    where
+        search = do
+            start <- takeToken
+            first <- item
+            (items, scope) <- following
+            end <- want "."
+            pure (CSearch (tokenSpan start <> tokenSpan end) (first : items) scope)
+        following = do
+            next <- peek
+            case tokenText <$> next of
+                Just "." -> pure ([], Everywhere)
+                Just prefix
+                    | prefix `elem` ["in", "inside", "outside"] -> do
+                        _ <- takeToken
+                        names <- (:) <$> qname <*> series (\kind -> kind == "qualid" || identifier kind) qname
+                        pure ([], if prefix == "outside" then Outside names else Inside names)
+                _ -> do
+                    first <- item
+                    (rest, scope) <- following
+                    pure (first : rest, scope)
+        item = do
+            next <- peek
+            positive <- case tokenText <$> next of
+                Just "-" -> takeToken >> pure False
+                _ -> pure True
+            kind <- ahead
+            value <- if kind == "string" then SearchName . tokenText <$> takeToken else SearchTerm <$> atom
+            pure (positive, value)
 
 -- Only the trailing body of an open binder inherits an outer notation's
 -- delimiter. A binder domain or a let value has its own closing token.
@@ -162,7 +200,7 @@ base = do
             pure (Term (tokenSpan start <> termSpan body) (build binders body))
         branch = do
             start <- want "|"
-            pat <- patternP
+            pat <- Parser $ \grammar -> runParser (branchPattern grammar) grammar
             body <- want "=>" >> term
             pure (Branch (tokenSpan start <> termSpan body) pat body)
 
@@ -241,7 +279,11 @@ atom = do
 projectionTail :: Term -> Parser Term
 projectionTail value = do
     next <- ahead
-    if next /= ".(" then pure value else do
+    if next == "scope-delimiter" then do
+        _ <- takeToken
+        key <- ident
+        projectionTail (Term (termSpan value <> nameSpan key) (SDelimited key value))
+    else if next /= ".(" then pure value else do
         field <- takeToken >> qname
         end <- want ")"
         projectionTail (Term (termSpan value <> tokenSpan end) (SProjection value field))
@@ -389,6 +431,13 @@ command = do
             body <- want ":=" >> term
             pure (\at -> CDefinition at kind name binders typ body)
     case kind of
+        "section-command" -> case tokenText start of
+            "Section" -> boundIdent >>= \name -> finish (\at -> CSection at name)
+            "End" -> ident >>= \name -> finish (\at -> CEnd at name)
+            _ -> do
+                binders <- abstractionBinders
+                when (any (maybe True (const False) . binderType) binders || any ((== "_") . nameText) (concatMap binderVars binders)) bad
+                finish (\at -> CContext at binders)
         "Definition" -> named definition
         "Lemma" -> named definition
         "Theorem" -> named definition
@@ -443,7 +492,7 @@ command = do
             finish (\at -> CInfix at symbol target (read (tokenText n)) direction)
         "Arguments" -> do
             target <- qname
-            specs <- series (\k -> identifier k || k == "{") argument
+            specs <- concat <$> series (\k -> variableKind k || k `elem` ["{", "("]) argument
             options <- after ":" $ do
                 key <- ident
                 value <- namedBy (\k -> k == "numeral" || identifier k)
@@ -478,11 +527,18 @@ command = do
                 pure (field : maybe [] id rest)
         argument = do
             next <- ahead
-            if next == "{" then do
-                start <- takeToken
-                name <- ident
-                end <- want "}"
-                pure (ArgSpec (tokenSpan start <> tokenSpan end) True name)
+            if next `elem` ["(", "{"] then do
+                open <- takeToken
+                first <- one
+                rest <- series variableKind one
+                close <- want (if next == "{" then "}" else ")")
+                common <- keys
+                let location = withKeys (tokenSpan open <> tokenSpan close) common
+                pure [Argument location (next == "{") n (own ++ common) | (n, own) <- first : rest]
             else do
-                name <- ident
-                pure (ArgSpec (nameSpan name) False name)
+                (name, own) <- one
+                pure [Argument (withKeys (nameSpan name) own) False name own]
+            where
+                keys = series (== "scope-delimiter") (takeToken >> ident)
+                one = (,) <$> variable <*> keys
+                withKeys span scopes = foldl (\at scope -> at <> nameSpan scope) span scopes

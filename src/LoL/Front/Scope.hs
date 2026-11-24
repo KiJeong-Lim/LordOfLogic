@@ -36,26 +36,40 @@ translate = translateUnder (const False) []
 -- `hidden` says which short names are ambiguous and have a constructor.
 -- `outer` has the names of binders around the term, the innermost first.
 translateUnder :: (String -> Bool) -> [String] -> Map.Map String Core.Global -> Map.Map Core.ConstId Env.Entry -> Term -> Either Diagnostic PositionedTerm
-translateUnder hidden outer globals decls = resolve outer where
+translateUnder = translateSyntax Nothing
+
+-- Search patterns share the ordinary scope resolver. Only the search reader
+-- retains anonymous holes and inserts wildcards in implicit argument slots.
+-- Its result is inspected as syntax and never proposed to the kernel.
+translateSyntax :: Maybe (Map.Map Core.Global [Bool]) -> (String -> Bool) -> [String] -> Map.Map String Core.Global -> Map.Map Core.ConstId Env.Entry -> Term -> Either Diagnostic PositionedTerm
+translateSyntax search hidden outer globals decls = resolve outer where
     leaf position value = PositionedTerm value position []
     binary position constructor left right = PositionedTerm (constructor (placedTerm left) (placedTerm right)) position [left, right]
     unknown name = Left (Diagnostic (nameSpan name) "LoL-ScopeError" "H-Name" ("unknown name: " ++ nameText name) [nameText name])
-    global name = maybe (unknown name) Right (Map.lookup (nameText name) globals)
+    global name = maybe (unknown name) Right (lookupReference globals name)
     hintOf name = if nameText name == "_" then "" else nameText name
     resolve locals source = case termForm source of
         SName name -> positioned <$> named name
         SDeclared name -> leaf position . Core.fromGlobal <$> global name
         SBound index -> Right (leaf position (Core.Var index))
         SMask prefix count expr -> resolve (maskLocals (const "") prefix count locals) expr
-        SWithout name expr -> translateUnder hidden locals (Map.delete (nameText name) globals) decls expr
+        SWithout name expr -> translateSyntax search hidden locals (Map.delete (nameText name) globals) decls expr
+        SExplicitGlobal reference -> Right (leaf position (Core.fromGlobal reference))
         SGlobal reference -> Right (leaf position (Core.fromGlobal reference))
         SExplicit name -> positioned <$> named name
         SProp -> Right (leaf position Core.Prop)
         SSet -> Right (leaf position (Core.Type (Core.Closed 0)))
         SType level -> Right (leaf position (Core.Type (Core.Closed level)))
+        SInferredType | Just _ <- search -> Right (leaf position (Core.Hole 1))
         SInferredType -> unavailable "inferred universe"
         SUniverse _ -> unavailable "symbolic universe"
         SInstance {} -> unavailable "explicit universe instance"
+        SApp {} | Just modes <- search -> do
+            let (headSource, args) = spine [] source
+            function <- resolve locals headSource
+            arguments <- mapM (resolve locals) args
+            let slots = maybe [] (\g -> Map.findWithDefault [] g modes) (implicitHead locals headSource)
+            return (foldl (binary position Core.App) function (fill slots arguments))
         SApp function argument -> binary position Core.App <$> resolve locals function <*> resolve locals argument
         SProjection receiver field -> do
             accessor <- global field
@@ -76,6 +90,7 @@ translateUnder hidden outer globals decls = resolve outer where
             return translated { placedSpan = position }
         SMatch scrutinee alias family (Just clause) branches -> match locals position scrutinee alias family clause branches
         SFix bodies selected -> fixpoint locals position bodies selected
+        SHole | Just _ <- search -> Right (leaf position (Core.Hole 0))
         SHole -> unavailable "_"
         SNumeral _ -> unavailable "numeral"
         SOperators _ _ -> unavailable "operator sequence"
@@ -90,10 +105,22 @@ translateUnder hidden outer globals decls = resolve outer where
             named name = maybe (leaf position . Core.fromGlobal <$> global name) (Right . leaf position . Core.Var) (elemIndex (nameText name) locals)
             positioned translated = translated { placedSpan = position }
             unavailable syntax = Left (unsupported position syntax)
+            fill (True : flags) args = leaf position (Core.Hole 0) : fill flags args
+            fill (False : flags) (x : xs) = x : fill flags xs
+            fill _ args = args
+    spine args (Term _ (SApp f a)) = spine (a : args) f
+    spine args (Term _ (SParen t)) = spine args t
+    spine args t = (t, args)
+    implicitHead locals value = case termForm value of
+        SName name | nameText name `notElem` locals -> lookupReference globals name
+        SGlobal g -> Just g
+        SMask prefix count expr -> implicitHead (maskLocals (const "") prefix count locals) expr
+        _ -> Nothing
     expand constructor locals [] body = resolve locals body
     expand constructor locals (binder : rest) body
-        | binderImpl binder = Left (unsupported (binderSpan binder) "implicit binder {x : A}")
+        | binderImpl binder, Nothing <- search = Left (unsupported (binderSpan binder) "implicit binder {x : A}")
         | otherwise = case binderType binder of
+            Nothing | Just _ <- search -> names constructor locals (binderSpan binder) (binderVars binder) (leaf (binderSpan binder) (Core.Hole 0)) rest body
             Nothing -> Left (unsupported (binderSpan binder) "binder without a type")
             Just annotation -> do
                 translated <- resolve locals annotation
@@ -117,12 +144,14 @@ translateUnder hidden outer globals decls = resolve outer where
                 case found of
                     Core.GlobalInd b i -> Right (b, i, Just (at, items))
                     _ -> Left (unsupported at "an `in` clause that does not name an inductive family")
+            (Just (RawPattern raw), _) -> Left (unsupported (termSpan raw) "unexpanded pattern notation")
             (Just (WildPattern at), _) -> Left (unsupported at "an `in` clause without a family")
             (Nothing, Branch at (Pattern _ _ name _) _ : _) -> do
                 found <- familyOf locals name
                 case found of
                     Core.GlobalCon b i _ -> Right (b, i, Nothing)
                     _ -> Left (unsupported at "a pattern that does not name a constructor")
+            (Nothing, Branch at (RawPattern _) _ : _) -> Left (unsupported at "unexpanded pattern notation")
             (Nothing, Branch at (WildPattern _) _ : _) -> Left (unsupported at "a `_` pattern")
             (Nothing, []) -> Left (unsupported position "match without a branch and without an `in` clause")
         (parameters, shape) <- case Map.lookup block decls of
@@ -137,6 +166,7 @@ translateUnder hidden outer globals decls = resolve outer where
         translatedClause <- resolve (reverse bound ++ locals) clause
         translatedBranches <- mapM (branch locals block index parameters) (zip [0 ..] branches)
         return (PositionedTerm (Core.Case block index [] (replicate parameters (Core.Hole 0)) bound (placedTerm translatedClause) (placedTerm translatedScrutinee) [(hints, placedTerm body) | (hints, body) <- translatedBranches]) position (translatedClause : translatedScrutinee : map snd translatedBranches))
+    familyOf _ name@ResolvedName {} = global name
     familyOf locals name
         | nameText name `elem` locals = Left (unsupported (nameSpan name) "a pattern that names a local variable")
         | otherwise = global name
@@ -154,6 +184,7 @@ translateUnder hidden outer globals decls = resolve outer where
                 Just (Core.GlobalCon {}) -> True
                 _ -> False
     branch locals block index parameters (place, Branch at pattern body) = case pattern of
+        RawPattern raw -> Left (unsupported (termSpan raw) "unexpanded pattern notation")
         WildPattern _ -> Left (unsupported at "a `_` pattern")
         Pattern _ _ name items -> do
             found <- familyOf locals name

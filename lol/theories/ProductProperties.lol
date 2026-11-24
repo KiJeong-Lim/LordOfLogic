@@ -26,11 +26,17 @@ Theorem prod_eq_iff : forall (A B : Set) (p q : prod A B),
         (fun h => prod_ext A B p q
             (and_left ((fst A B p) = (fst A B q)) ((snd A B p) = (snd A B q)) h)
             (and_right ((fst A B p) = (fst A B q)) ((snd A B p) = (snd A B q)) h)).
-Theorem prod_map_id : forall (A B : Set) (p : prod A B), ((prod_map A B A B (fun x => x) (fun y => y) p) = p) :=
-    fun A B p => prod_eta A B p.
+Theorem prod_map_id : forall (A B : Set) (p : prod A B), ((prod_map A B A B (fun x => x) (fun y => y) p) = p).
+Proof.
+    intros A B p.
+    exact (prod_eta A B p).
+Qed.
 Theorem prod_map_comp : forall (A B C D E F : Set) (f : A -> C) (g : B -> D) (h : C -> E) (k : D -> F) (p : prod A B),
-    ((prod_map C D E F h k (prod_map A B C D f g p)) = (prod_map A B E F (fun x => h (f x)) (fun y => k (g y)) p)) :=
-    fun A B C D E F f g h k p => eq_refl (pair E F (h (f (fst A B p))) (k (g (snd A B p)))).
+    ((prod_map C D E F h k (prod_map A B C D f g p)) = (prod_map A B E F (fun x => h (f x)) (fun y => k (g y)) p)).
+Proof.
+    intros.
+    reflexivity.
+Qed.
 Theorem prod_map_ext : forall (A B C D : Set) (f h : A -> C) (g k : B -> D),
     (forall x : A, ((f x) = (h x))) -> (forall y : B, ((g y) = (k y))) ->
     forall p : prod A B, ((prod_map A B C D f g p) = (prod_map A B C D h k p)) :=
@@ -42,13 +48,20 @@ Theorem prod_map_injective : forall (A B C D : Set) (f : A -> C) (g : B -> D),
     fun A B C D f g h k p q e => prod_ext A B p q
         (h (fst A B p) (fst A B q) (f_equal (fst C D) (prod_map A B C D f g p) (prod_map A B C D f g q) e))
         (k (snd A B p) (snd A B q) (f_equal (snd C D) (prod_map A B C D f g p) (prod_map A B C D f g q) e)).
-Theorem prod_swap_involutive : forall (A B : Set) (p : prod A B), ((prod_swap B A (prod_swap A B p)) = p) :=
-    fun A B p => prod_eta A B p.
+Theorem prod_swap_involutive : forall (A B : Set) (p : prod A B), ((prod_swap B A (prod_swap A B p)) = p).
+Proof.
+    intros A B p.
+    exact (prod_eta A B p).
+Qed.
 Theorem prod_swap_map : forall (A B C D : Set) (f : A -> C) (g : B -> D) (p : prod A B),
     ((prod_swap C D (prod_map A B C D f g p)) = (prod_map B A D C g f (prod_swap A B p))) :=
     fun A B C D f g p => eq_refl (pair D C (g (snd A B p)) (f (fst A B p))).
 Theorem curry_uncurry : forall (A B C : Set) (f : A -> B -> C) (a : A) (b : B),
-    ((curry A B C (uncurry A B C f) a b) = (f a b)) := fun A B C f a b => eq_refl (f a b).
+    ((curry A B C (uncurry A B C f) a b) = (f a b)).
+Proof.
+    intros.
+    reflexivity.
+Qed.
 Theorem uncurry_curry : forall (A B C : Set) (f : prod A B -> C) (p : prod A B),
     ((uncurry A B C (curry A B C f) p) = (f p)) :=
     fun A B C f p => f_equal f (pair A B (fst A B p) (snd A B p)) p (prod_eta A B p).

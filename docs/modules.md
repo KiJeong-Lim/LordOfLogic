@@ -37,7 +37,7 @@ The run prints four lines.
 ```text
 nat -> nat
 S (S (S (S O)))
-The theorem was admitted.
+The theorem was accepted.
 (* No assumptions. *)
 ```
 
@@ -94,7 +94,10 @@ subdirectory. `Double.lolo` refers to its dependencies by digest in that
 subdirectory. The recipient runs `--check-only` on the copied main object from
 a project root containing this release's `lol/hol`. The kernel rechecks the
 object and its dependencies without the original `Workshop/*.lol` sources.
-A successful check produces no output.
+On success, the report starts with `Checked object Workshop.Double.` and lists
+the declarations, each theorem’s transitive `Assumptions:` and the axioms in
+the checked modules. Add `--no-axioms` to require that every checked module
+declares no axioms, including axioms unused by a theorem.
 
 ## Export to Rocq
 
@@ -114,3 +117,14 @@ tree. A generated import of `lol.theories.Nat` then resolves to the compiled
 file under `build/rocq/lol/theories/`.
 
 [Repository reference](reference.md)
+
+## Checked imports
+
+On POSIX a previously admitted source module can reuse its elaborated
+declarations from a private cache under `$XDG_CACHE_HOME/lord-of-logic/imports`
+(default `~/.cache/lord-of-logic/imports`). The loader verifies the source and
+Hol inputs, resolves its dependencies, and runs the kernel over the cached
+declarations. An unusable entry falls back to the source loader. Set
+`LOL_IMPORT_CACHE=off` for a source-only run, or `LOL_IMPORT_CACHE_TRACE=1` to
+show successful hits on standard error. Compiled Hol programs use their own
+`LOL_HOL_CACHE` setting.

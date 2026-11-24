@@ -27,6 +27,8 @@ data ReportValue
     = ReportTerm [Hint] Term
     | ReportBinders [Hint] [Hint] Term
     | ReportHole Hint [Hint]
+    | ReportField String (Maybe ReportValue)
+    | ReportConstraint [Hint] String UniverseConstraint
     deriving (Eq, Show)
 
 -- What `ind_info` says of a family: the number of its parameters, whether a
@@ -199,11 +201,13 @@ embedUniverseConstraints = embedList (kindOf "uconstraint") . map constraint whe
         UniverseEq left right -> foldlNApp (named "uc_eq") [embedLevel left, embedLevel right]
 
 recoverUniverseConstraints :: TermNode -> Either String [UniverseConstraint]
-recoverUniverseConstraints node = recoverList node >>= mapM constraint where
-    constraint value = case unfoldlNApp value of
-        (NCon (DC (DC_Named "uc_le")) _, [left, right]) -> UniverseLe <$> recoverLevel left <*> recoverLevel right
-        (NCon (DC (DC_Named "uc_eq")) _, [left, right]) -> UniverseEq <$> recoverLevel left <*> recoverLevel right
-        _ -> Left "not a universe constraint"
+recoverUniverseConstraints node = recoverList node >>= mapM recoverConstraint
+
+recoverConstraint :: TermNode -> Either String UniverseConstraint
+recoverConstraint value = case unfoldlNApp value of
+    (NCon (DC (DC_Named "uc_le")) _, [left, right]) -> UniverseLe <$> recoverLevel left <*> recoverLevel right
+    (NCon (DC (DC_Named "uc_eq")) _, [left, right]) -> UniverseEq <$> recoverLevel left <*> recoverLevel right
+    _ -> Left "not a universe constraint"
 
 -- u_satisfiable emits closed logical syntax. This translation only changes
 -- representation; the existing Hol Presburger service decides the formula.
@@ -507,9 +511,19 @@ recoverString node = recoverList node >>= mapM character where
 -- decode terms for user diagnostics. Free kernel nominals are displayed as
 -- explicit local names, not mistaken for global declarations.
 recoverReport :: TermNode -> Either String Report
-recoverReport node
-    = case node of
-        NApp (NApp (NCon (DC (DC_Named "rep")) _) rule _) args _ -> do
+recoverReport node = case unfoldlNApp node of
+    (NCon (DC (DC_Named "rep")) _, [rule, args]) -> terms rule [] args
+    (NCon (DC (DC_Named "rep_fields")) _, [rule, fields, args]) -> do
+        roles <- recoverList fields >>= mapM recoverString
+        terms rule roles args
+    (NCon (DC (DC_Named "rep_constraint")) _, [rule, role, relation]) -> do
+        label <- recoverString rule
+        field <- recoverString role
+        value <- recoverConstraint relation
+        return (Report label [display relation] [Just (ReportConstraint [] field value)])
+    _ -> Left "not a report"
+    where
+        terms rule roles args = do
             label <- recoverString rule
             values <- recoverList args
             let locals = nub (concatMap atoms values)
@@ -522,9 +536,10 @@ recoverReport node
                     _ -> case recoverWith (`elemIndex` locals) [] value of
                         Right term -> Just (ReportTerm hints term)
                         Left _ -> either (const Nothing) (\(binders, term) -> Just (ReportBinders hints binders term)) (recoverBindersWith (`elemIndex` locals) [] value)
-            return (Report label (map display values) (map decoded values))
-        _ -> Left "not a report"
-    where
+                field "source" value = decoded value
+                field role value = Just (ReportField role (decoded value))
+                fields = if length roles == length values then zipWith field roles values else map decoded values
+            return (Report label (map display values) fields)
         atoms term = case term of
             NCon (DC (DC_Unique _ _)) _ -> [term]
             LVar _ -> [term]

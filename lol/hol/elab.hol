@@ -151,7 +151,16 @@ type e_proof_fix (nat -> list rposition -> list raw -> ((nat -> tm) -> list raw)
 % The position is a source-node number. Haskell only maps it back to a span.
 e_need G R Ts :- G, !.
 e_need G R Ts :- e_silent_failure, !, fail.
-e_need G R Ts :- e_at P, shown_all Ts Ns, print (rep R (cst P [] :: Ns)), fail.
+e_need G R Ts :- e_at P, shown_all Ts Ns, report_terms G R ["source"] (cst P [] :: Ns), fail.
+report_fields (e_fit M A B N) "E-Unify" ["has type", "expected"].
+report_fields (sub A B) "E-Unify" ["has type", "expected"].
+report_fields (conv H A) "E-Unify" ["written binder type", "expected binder type"].
+report_fields (infer A S, whnf S W, is_sort W) "E-Unify" ["declared type"].
+report_fields (match_head H B I U) "E-Unify" ["scrutinee type"].
+report_fields (e_family F B I Vs) "E-Unify" ["scrutinee type"].
+report_fields fail "E-Unsolved" ["hole", "expected"].
+report_fields (e_absent (flex TT)) "E-Unsolved" ["scrutinee", "scrutinee type"].
+report_fields (e_done M, e_done A) "E-Unsolved" ["term", "type"].
 
 % Kernel-labelled diagnostics carry Core arguments only. A source-position
 % marker would otherwise be displayed as an unrelated global constant.
@@ -187,7 +196,7 @@ e_definition R T A M :- e_annotation_hole R A S, !, e_out T A M,
     e_need (e_done A) "E-Unsolved" (A :: []),
     e_need (infer A S, whnf S W, is_sort W) "E-Unify" (A :: []),
     e_raw_done R, e_raw_done T, e_need (e_done M) "E-Unsolved" (M :: []).
-e_definition R T A M :- e_kind R A _, e_out T A M, e_raw_done R, e_raw_done T, e_need (e_done A, e_done M) "E-Unsolved" (A :: M :: []).
+e_definition R T A M :- e_kind R A _, e_out T A M, e_raw_done R, e_raw_done T, e_need (e_done A, e_done M) "E-Unsolved" (M :: A :: []).
 
 % [E-Const], [E-App]. Explicit arguments precede result-type comparison.
 e_in R M A :- flex R, !, e_need fail "E-Unsolved" [].
@@ -811,7 +820,7 @@ e_u_finish Mode Count Context Given UV Kinds Cells Terms Recorded Result OutCoun
     e_u_initial UV 0 Map, e_u_minimize Mode Given UV Kinds Cells Cs Solved,
     (e_u_solved Solved => (u_map_terms (e_u_general Mode) (u_state Count Map) S Terms Raw, e_u_general_constraints Mode Cs S (u_state OutCount Final) Obligations)),
     e_u_reorder Mode Cells Kinds Final OutCount Raw Obligations Result Ordered,
-    e_u_final_context Mode Count Context OutCount Ordered OutContext.
+    e_u_report_context "E-Unify" Mode Count Context OutCount Ordered OutContext.
 % Defer a missing slot until the surrounding type has been read. A slot
 % forced to Set is its eta-specialization. Otherwise the owner contributes
 % its shared default, including when two different occurrences constrain it.
@@ -856,6 +865,25 @@ e_u_permute Perm L S S M :- (L == lb, M = lb; u_sublevel Perm L M), !.
 type e_u_final_context (nat -> nat -> list uconstraint -> nat -> list uconstraint -> list uconstraint -> o).
 type e_u_consistent (nat -> list uconstraint -> o).
 e_u_final_context 1 Count Context Count Obligations Context :- e_u_closed_obligations Count Context Obligations.
+% The surface and proof callers give a different rule to the same failed
+% judgment. Only explain a terminal check; a probe reads the bare judgment.
+type rep_constraint (string -> string -> uconstraint -> report).
+type e_u_report_context (string -> nat -> nat -> list uconstraint -> nat -> list uconstraint -> list uconstraint -> o).
+e_u_report_context Rule Mode Count Context OutCount Obligations OutContext :-
+    e_u_final_context Mode Count Context OutCount Obligations OutContext, !.
+e_u_report_context Rule 1 Count Context Count Obligations OutContext :- !,
+    report_descriptions, e_absent e_silent_failure, e_u_missing_obligation Rule Count Context Obligations, fail.
+e_u_report_context Rule Mode Count Context OutCount Obligations OutContext :- e_absent (Mode = 1),
+    report_descriptions, e_absent e_silent_failure, e_u_append Context Obligations All,
+    e_u_conflicting_obligation Rule OutCount [] All, fail.
+type e_u_missing_obligation (string -> nat -> list uconstraint -> list uconstraint -> o).
+e_u_missing_obligation Rule Count Context (C :: Cs) :-
+    e_u_closed_obligations Count Context [C], !, e_u_missing_obligation Rule Count Context Cs.
+e_u_missing_obligation Rule Count Context (C :: Cs) :- print (rep_constraint Rule "required universe constraint" C).
+type e_u_conflicting_obligation (string -> nat -> list uconstraint -> list uconstraint -> o).
+e_u_conflicting_obligation Rule Count Consistent (C :: Cs) :-
+    e_u_consistent Count (C :: Consistent), !, e_u_conflicting_obligation Rule Count (C :: Consistent) Cs.
+e_u_conflicting_obligation Rule Count Consistent (C :: Cs) :- print (rep_constraint Rule "conflicting universe constraint" C).
 % Mode 2 is a declaration that names its universes and writes no constraint
 % clause, and mode 0 one that names none. Rocq reads the first as one whose
 % constraints are still to be found (`@{u v}` is `@{u v | +}` there), and
@@ -875,7 +903,9 @@ e_u_needed Count Kept [] Result :- rev Kept [] Result.
 e_u_needed Count Kept (C :: Cs) Result :-
     rev Kept Cs Others, e_u_closed_obligations Count Others (C :: []), !,
     e_u_needed Count Kept Cs Result.
-e_u_needed Count Kept (uc_le L R :: Cs) Result :- e_absent (e_u_atomic R), !, (e_at 0 => e_need fail "E-Algebraic" []).
+e_u_needed Count Kept (uc_le L R :: Cs) Result :- e_absent (e_u_atomic R), !,
+    (report_descriptions, e_absent e_silent_failure, !, print (rep_constraint "E-Algebraic" "required universe constraint" (uc_le L R)), fail;
+        (e_at 0 => e_need fail "E-Algebraic" [])).
 e_u_needed Count Kept (C :: Cs) Result :- e_u_needed Count (C :: Kept) Cs Result.
 % Constraints that no levels satisfy prove every inequality, also that the
 % first parameter is above itself. Without a parameter they are closed, and

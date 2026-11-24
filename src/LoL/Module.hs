@@ -4,7 +4,7 @@ import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, bracket, evaluate, mask, onException, try)
 import Control.Monad (foldM, unless, when)
 import Data.Char (ord)
-import Data.List (intercalate, isPrefixOf)
+import Data.List (foldl', intercalate, isPrefixOf, sortOn, stripPrefix)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import GHC.Clock (getMonotonicTimeNSec)
@@ -14,13 +14,15 @@ import qualified LoL.Core as Core
 import LoL.Diagnostic
 import qualified LoL.Env as Env
 import qualified LoL.Front.Notation as Notation
+import qualified LoL.Front.Template as Template
 import LoL.Front.Parse (commandChunks, inputLimit, parseChunkIndexed)
 import LoL.Front.Syntax
 import qualified LoL.Front.Vernac as Vernac
-import LoL.Front.Fixity (resolveRule, validateArgumentsOwner)
+import LoL.Front.Fixity (replayScope, resolveRule, validateArgumentsOwner)
 import LoL.Hol.Session (Kernel, Limits)
 import qualified LoL.Object as Object
 import qualified LoL.Pretty as Pretty
+import qualified LoL.Proof.Section as Section
 import Numeric (showHex)
 import System.Directory (canonicalizePath, copyFileWithMetadata, copyPermissions, createDirectoryIfMissing, doesPathExist, getPermissions, pathIsSymbolicLink, readable, removeFile, renameFile, writable)
 import System.FilePath ((</>), addExtension, dropExtension, equalFilePath, isAbsolute, makeRelative, splitDirectories, takeDirectory, takeExtension, takeFileName)
@@ -39,7 +41,7 @@ data Unit
     = Unit
         { unitName    :: String
         , unitPath    :: FilePath
-        , unitSource  :: String
+        , unitSource  :: Maybe String
         , unitImports :: [String]
         , unitLocals  :: [ConstId]
         , unitNames   :: !(Map.Map String Global)
@@ -138,10 +140,80 @@ short name = after name name where
 emptySyntax :: Env.Syntax
 emptySyntax = Env.Syntax Map.empty Map.empty Nothing Set.empty
 
+moduleGrammar :: String -> Env.Syntax
+moduleGrammar name = emptySyntax { Env.syntaxOwner = name }
+
 -- Only an explicit public declaration re-exports a rule. In particular
 -- importing a module, or using its notation in a definition, exports none.
-recordSyntax :: String -> Command -> Env.Env -> Env.Syntax -> (Env.Syntax, Env.Syntax)
-recordSyntax owner command next exported = case command of
+recordSyntax :: String -> Bool -> Int -> Int -> [Global] -> Command -> Env.Env -> Env.Syntax -> (Env.Syntax, Env.Syntax)
+recordSyntax owner inside imports offset newGlobals command next exported = (live, policies { Env.syntaxSchedule = reversed ++ Env.syntaxSchedule exported }) where
+    born = copyPolicies newGlobals live published
+    policies = case command of
+        CSetArguments _ loc name _ _ | loc == GlobalSyntax || loc == DefaultSyntax && not inside, Just g <- lookupReference (Env.envNames next) name -> copyArgument command g live born
+        _ -> born
+    (live, published) = recordGrammar owner command next exported
+    reversed = [(imports, offset, event) | event <- reverse (implicit ++ steps)]
+    implicit = [ArgumentStep False g flags Nothing | g <- newGlobals, Just flags <- [Map.lookup g (Env.syntaxArguments live)], or flags]
+    steps = case command of
+        CWhere _ _ clauses -> replicate (length clauses) PublicSyntax
+        CRocqNotation _ loc _ _ _ _ _ _ _ _ -> [PublicSyntax | loc /= LocalSyntax]
+        CSelectNotation _ LocalSyntax _ _ _ | Left op : _ <- Env.syntaxHistory live -> [PrivateScope op]
+        CSelectNotation {} -> [PublicSyntax]
+        CScope _ LocalSyntax _ | Left op : _ <- Env.syntaxHistory live -> [PrivateScope op]
+        CScope {} -> [PublicSyntax]
+        CSetArguments _ loc name args options
+            | Just g <- lookupReference (Env.envNames next) name
+            , not (null args) || clear ->
+                [ArgumentStep (loc == LocalSyntax) g (if null args then [] else Map.findWithDefault [] g (Env.syntaxArguments live)) (if clear || scoped then Map.lookup g (Env.syntaxArgScopes live) else Nothing)]
+            where
+                clear = map nameText options == ["clear", "scopes"]
+                scoped = any (\(Argument _ _ _ scopes) -> not (null scopes)) args
+        _ -> []
+
+copyPolicies :: [Global] -> Env.Syntax -> Env.Syntax -> Env.Syntax
+copyPolicies keys source initial = foldl' copyTo initial keys where
+    copyTo target g = target
+        { Env.syntaxArguments = field Env.syntaxArguments
+        , Env.syntaxArgScopes = field Env.syntaxArgScopes
+        , Env.syntaxArgPrefixes = field Env.syntaxArgPrefixes
+        , Env.syntaxNever = (if Set.member g (Env.syntaxNever source) then Set.insert else Set.delete) g (Env.syntaxNever target)
+        , Env.syntaxProjectionParameters = field Env.syntaxProjectionParameters
+        }
+        where
+            field get = Map.alter (const (Map.lookup g (get source))) g (get target)
+
+-- A public hint about reduction must not publish an earlier Local scope
+-- setting on the same constant. Copy only the metadata this command wrote.
+copyArgument :: Command -> Global -> Env.Syntax -> Env.Syntax -> Env.Syntax
+copyArgument (CArguments _ _ args opts) g source target = target
+    { Env.syntaxArguments = select (not (null args)) Env.syntaxArguments
+    , Env.syntaxArgPrefixes = select scoped Env.syntaxArgPrefixes
+    , Env.syntaxArgScopes = select scoped Env.syntaxArgScopes
+    , Env.syntaxNever = select (options `elem` [["clear","simpl"],["simpl","never"]]) Env.syntaxNever
+    , Env.syntaxProjectionParameters = select (take 1 options == ["projection"]) Env.syntaxProjectionParameters
+    }
+    where
+        after = copyPolicies [g] source target
+        options = map nameText opts
+        scoped = options == ["clear","scopes"] || any (\(Argument _ _ _ scopes) -> not (null scopes)) args
+        select changed field = field (if changed then after else target)
+copyArgument _ _ _ target = target
+
+ownedSyntax :: Set.Set Global -> Env.Syntax -> Env.Syntax -> Env.Syntax
+ownedSyntax own active exported = Object.ownedArguments own exported { Env.syntaxDefaults = Env.syntaxDefaults active } exported
+
+recordGrammar :: String -> Command -> Env.Env -> Env.Syntax -> (Env.Syntax, Env.Syntax)
+recordGrammar owner command next exported = case command of
+    CWhere _ _ clauses -> foldl install (active,exported) (zip clauses recent) where
+        recent = reverse [r | Right r <- take (length clauses) (Env.syntaxHistory active)]
+        install (syntax,out) (clause,rule) = (syntax { Env.syntaxRuleSites = Map.insert rule loc (Env.syntaxRuleSites syntax) }, Env.registerRule rule loc out)
+            where loc = (owner,commandSpan clause)
+    CRocqNotation position local _ _ _ _ _ _ _ _
+        | Right rule : _ <- Env.syntaxHistory active -> (active { Env.syntaxRuleSites = Map.insert rule site (Env.syntaxRuleSites active), Env.syntaxAliases = Env.syntaxAliases (Env.registerRule rule site active) }, if local == LocalSyntax then exported else publish rule site)
+        where site = (owner, position)
+    CSelectNotation _ local _ _ _ | Left op : _ <- Env.syntaxHistory active -> (active, if local == LocalSyntax then exported else replayScope op exported)
+    CScope _ local _
+        | Left op : _ <- Env.syntaxHistory active -> (active, if local == LocalSyntax then exported else replayScope op exported)
     CNotation position local written
         | Right rule <- resolveRule next written ->
             (active { Env.syntaxRuleSites = Map.insert rule site (Env.syntaxRuleSites active) }, if local then exported else publish rule site)
@@ -180,7 +252,7 @@ dependencyNames loaded imports = Map.unions [unitNames unit | name <- dependency
 -- The implicit status that the modules `roots` and those that they depend on
 -- export, each for its own declarations.
 importArguments :: Loaded -> [String] -> Env.Syntax -> Env.Syntax
-importArguments loaded roots syntax = syntax { Env.syntaxArguments = Map.unions (map Env.syntaxArguments policies), Env.syntaxNever = Set.unions (map Env.syntaxNever policies), Env.syntaxProjectionParameters = Map.unions (map Env.syntaxProjectionParameters policies) } where
+importArguments loaded roots syntax = (Env.withEntryDependencies (tail policies) syntax) { Env.syntaxArgPrefixes = Map.unions (map Env.syntaxArgPrefixes policies), Env.syntaxDefaults = Map.unions (map Env.syntaxDefaults policies), Env.syntaxArgScopes = Map.unions (map Env.syntaxArgScopes policies), Env.syntaxArguments = Map.unions (map Env.syntaxArguments policies), Env.syntaxNever = Set.unions (map Env.syntaxNever policies), Env.syntaxProjectionParameters = Map.unions (map Env.syntaxProjectionParameters policies) } where
     policies = syntax : [unitSyntax unit | name <- dependencyModules loaded roots, Just unit <- [Map.lookup name (loadedUnits loaded)]]
 
 importView :: Loaded -> [String] -> Either (String, String) (Map.Map String Global, Env.Syntax)
@@ -205,6 +277,7 @@ modulePath root name = addExtension (root </> map (\char -> if char == '.' then 
 
 commandNames :: Command -> [String]
 commandNames command = case command of
+    CWhere _ inner _ -> commandNames inner
     CDefinition _ _ name _ _ _ -> [nameText name]
     CAxiom _ name _ -> [nameText name]
     CInductive _ bodies -> concat [[nameText name] ++ [nameText given | Constructor _ given _ <- constructors] | IndBody _ name _ _ constructors <- bodies]
@@ -254,20 +327,20 @@ loadSourceFrom initial kernel limits project top explicit emit = do
                     Left message -> return (Left (inputFailure path message))
                     Right source -> do
                         env <- universeView loaded [] []
-                        commands root (name : active) output name path source [] [] Map.empty emptyScope emptySyntax emptySyntax loaded { loadedEnv = env } (map reader (commandChunks source))
+                        commands root (name : active) output name path source [] [] Map.empty emptyScope (moduleGrammar name) (moduleGrammar name) loaded { loadedEnv = env } (map reader (commandChunks source))
         commands _ _ _ name path source events localRev own scope syntax exported loaded [] = do
             let env = Env.withAmbiguous Set.empty (Env.withSyntax syntax (Env.withNames (scopeAvailable scope) (loadedEnv loaded)))
                 imports = map fst events
                 locals = reverse localRev
                 canonical = Map.mapKeys ((name ++ ".") ++) own
                 names = Map.union (Map.fromList [(global, given) | (given, global) <- Map.toList canonical]) (canonicalNames loaded)
-                ownedSyntax = Object.ownedArguments (Set.fromList (Map.elems own)) syntax exported
+                public = ownedSyntax (Set.fromList (Map.elems own)) syntax exported
                 pins = mapM (\dependency -> maybe (Left ("missing captured dependency: " ++ dependency)) (\unit -> Right (dependency, unitDigest unit)) (Map.lookup dependency (loadedUnits loaded))) imports
-            case pins >>= \dependencies -> Object.captureNamedObject name dependencies names locals (Env.withSyntax ownedSyntax env) of
+            case pins >>= \dependencies -> Object.captureNamedObject name dependencies names locals (Env.withSyntax public env) of
                 Left message -> return (Left (failure path source origin "I-Object" message))
                 Right stored -> do
                     let object = Object.withImportOffsets (map snd events) stored
-                        unit = Unit name path source imports locals canonical ownedSyntax object (Object.fingerprint object)
+                        unit = Unit name path (Just source) imports locals canonical public object (Object.fingerprint object)
                     return (Right loaded { loadedEnv = env, loadedUnits = Map.insert name unit (loadedUnits loaded), loadedOrder = loadedOrder loaded ++ [name] })
         commands root active output name path source imports localRev own scope syntax exported loaded (readChunk : later) = case readChunk syntax of
             Left problem -> return (Left (Failure path source (fromFrontError problem)))
@@ -319,7 +392,7 @@ loadSourceFrom initial kernel limits project top explicit emit = do
                             globals = [(given, global) | identity <- identities, Just entry <- [Map.lookup identity (Env.envDecls next)], (given, global) <- Env.declGlobals identity (Env.entryName entry) (Env.entryDecl entry)]
                             own' = Map.union (Map.fromList globals) own
                             scope' = introduce scope (Map.fromList [(name ++ "." ++ given, global) | (given, global) <- globals])
-                            (activeSyntax, exported') = recordSyntax name command next exported
+                            (activeSyntax, exported') = recordSyntax name False (length imports) (length localRev + length identities) (map snd globals) command next exported
                         when (output && not explicit) (emit rendered)
                         commands root active output name path source imports (reverse identities ++ localRev) own' scope' activeSyntax exported' loaded { loadedEnv = next } rest
 ambiguous :: Map.Map String Global -> Diagnostic -> Diagnostic
@@ -360,6 +433,7 @@ printedModuleWith fullText printedTerms printer loaded = do
     (imports, chunks) <- foldM (section unit) ([], []) (Object.importGroups (unitObject unit) entries)
     (env, imported) <- printingEnv unit imports
     let syntax = unitSyntax unit
+        timed = fullText && Object.scheduled syntax && not (null (Env.syntaxSchedule syntax))
         metadata (identity, entry) = concatMap policy (Env.declGlobals identity (Env.entryName entry) (Env.entryDecl entry)) where
             marked = case Env.entryDecl entry of
                 Env.Inductive _ families -> any (\family -> Env.familyTemplate family || Env.familyRecord family /= Nothing) families
@@ -368,18 +442,31 @@ printedModuleWith fullText printedTerms printer loaded = do
                 | not (fullText || marked || Map.member global (Env.syntaxProjectionParameters syntax)) = []
             policy (name, global) = concat
                 [ [header ++ " : projection " ++ show count ++ "." | Just count <- [Map.lookup global (Env.syntaxProjectionParameters syntax)]]
-                , [unwords (header : zipWith argument [0 :: Int ..] flags) ++ "." | Just flags <- [Map.lookup global (Env.syntaxArguments syntax)], or flags]
+                , [unwords (header : zipWith argument [0 :: Int ..] flags) ++ "." | Just flags <- [Map.lookup global (Env.syntaxArguments syntax)], or flags, not timed]
                 , [header ++ " : simpl never." | Set.member global (Env.syntaxNever syntax)]
                 ]
                 where
                     header = "Arguments " ++ maybe name id (Pretty.globalName env global)
                     argument index implicit = if implicit then "{" ++ label ++ "}" else label where
                         label = "x" ++ show index
+    let blocks = reverse chunks
+        placed = staged 0 0 blocks
+        schedule = zip [0 :: Int ..] (reverse (Env.syntaxSchedule syntax))
+        views = entryViews loaded placed schedule (reverse (Env.syntaxHistory syntax))
+        publicViews = if timed then [Just (Map.findWithDefault Map.empty k views) | (k,(_,_,PublicSyntax)) <- schedule] else repeat Nothing
     grammar <- if fullText then do
         _ <- checkGrammar (Object.joinSyntax imported syntax)
-        publicGrammar env syntax
+        publicGrammar publicViews env syntax
     else Right []
-    return (concat (reverse chunks) ++ concatMap metadata entries ++ grammar)
+    let boundArguments = [unwords ("Arguments" : label : (if all null slots then [":", "clear", "scopes"] else zipWith decorate flags slots)) ++ "." | (g, slots) <- Map.toAscList (Env.syntaxArgScopes syntax), Just label <- [Pretty.globalName env g], let flags = zip [0 :: Int ..] (Map.findWithDefault [] g (Env.syntaxArguments syntax) ++ repeat False)]
+        decorate (index, implicit) scopes = (if implicit then "{" ++ label ++ "}" else label) ++ concatMap ("%_" ++) scopes where
+            label = "x" ++ show index
+    let originals = concat [concat importsHere ++ hidden ++ decls | (importsHere, hidden, decls) <- blocks]
+    if timed then do
+        let (legacy, public) = splitAt (length grammar - length (Env.syntaxHistory syntax)) grammar
+        steps <- sourceSteps env views public schedule
+        Right (map snd (sortOn fst (steps ++ placed)) ++ concatMap metadata entries ++ legacy)
+    else return (originals ++ concatMap metadata entries ++ grammar ++ if fullText then boundArguments else [])
     where
         section unit (prior, chunks) (added, entries) = do
             let mentioned = Set.unions [Set.union (Core.constraintOwners (Env.entryUniverses entry)) (Set.unions (map constantsOf (printedTerms (Env.entryDecl entry)))) | (_, entry) <- entries]
@@ -392,8 +479,43 @@ printedModuleWith fullText printedTerms printer loaded = do
             case filter (`Set.member` reserved) declarationsHere of
                 name : _ -> Left ("H-Notation: an import needed by explicit output reserves the declaration name " ++ quoted name)
                 [] -> Right ()
-            declarations <- mapM (uncurry (printer env)) entries
-            return (imports, (["Import " ++ name ++ "." | name <- fresh] ++ declarations) : chunks)
+            let sectionPolicies = Map.fromList [(g, (n, fs, slots)) | fullText, (_, _, SectionStep g n fs slots) <- Env.syntaxSchedule (unitSyntax unit)]
+            declarations <- mapM (\(c, entry) -> Section.explicit printer env c entry sectionPolicies) entries
+            let importLine n = "Import " ++ n ++ "."
+            return (imports, ([[importLine n | n `notElem` prior] | n <- added], map importLine hidden, declarations) : chunks)
+        staged _ _ [] = []
+        staged i d ((importsHere, hidden, decls) : later) = importsAt ++ hiddenAt ++ declsAt ++ staged j (d + length decls) later where
+            importsAt = [((d, n, 2), line) | (n, lines) <- zip [i..] importsHere, line <- lines]
+            j = i + length importsHere
+            hiddenAt = [((d, j, 0), line) | line <- hidden]
+            declsAt = [((n, j, 2), line) | (n, line) <- zip [d..] decls]
+        sourceSteps _ _ [] [] = Right []
+        sourceSteps env views public ((index,(i, d, event)) : more) = case event of
+            PublicSyntax | line : rest <- public -> add line rest
+            PrivateScope op -> do
+                lines <- publicGrammar [Map.lookup index views] env (replayScope op (moduleGrammar (loadedMain loaded)))
+                case lines of
+                    [line] -> add ("Local " ++ line) public
+                    _ -> Left "invalid private scope in explicit module schedule"
+            ScopeLookup global -> do
+                label <- maybe (Left "a scope lookup has no printable name") Right (Pretty.globalName env global)
+                add ("Print " ++ label ++ ".") public
+            SectionStep {} -> sourceSteps env views public more
+            ArgumentStep local global flags policy -> do
+                label <- maybe (Left "a scheduled Arguments target has no printable name") Right (Pretty.globalName env global)
+                let scopes = maybe [] id policy
+                    count = max (length flags) (length scopes)
+                    specs = take count (zipWith decorate (zip [0 :: Int ..] (flags ++ repeat False)) (scopes ++ repeat []))
+                    suffix
+                        | Just sets <- policy, all null sets = " : clear scopes"
+                        | length scopes > length flags = " : extra scopes"
+                        | otherwise = ""
+                    decorate (n, implicit) keys = (if implicit then "{" ++ x ++ "}" else x) ++ concatMap ("%_" ++) keys where x = "x" ++ show n
+                add ((if local then "Local " else "") ++ unwords ("Arguments" : label : specs) ++ suffix ++ ".") public
+            _ -> Left "invalid public grammar order in explicit module schedule"
+            where
+                add line rest = (((d, i, 1 :: Int), line) :) <$> sourceSteps env views rest more
+        sourceSteps _ _ _ _ = Left "missing public grammar step in explicit module schedule"
         checkGrammar = either (\(code, message) -> Left (code ++ ": explicit output needs imports with conflicting notation; " ++ message)) Right
         printingEnv unit imports = do
             (_, visibleSyntax) <- checkGrammar (importView loaded imports)
@@ -406,10 +528,24 @@ printedModuleWith fullText printedTerms printer loaded = do
                 constructors = Set.fromList [short given | name <- unitImports unit, Just found <- [Map.lookup name (loadedUnits loaded)], (given, GlobalCon {}) <- Map.toList (unitNames found)]
             return (Env.withSyntax syntax (Env.withAmbiguous (Set.union constructors (scopeAmbiguous view)) (Env.withNames (scopeAvailable view) final)), visibleSyntax)
 
+-- Follow the same order as the emitted imports and syntax commands, including
+-- imports inserted for inferred types. Shorten a local entry only while its
+-- declaration is the current meaning of that short name in the replay text.
+entryViews :: Loaded -> [((Int,Int,Int),String)] -> [(Int,(Int,Int,SyntaxStep Global))] -> [Either (ScopeAction Global) (SyntaxRule Global)] -> Map.Map Int (Map.Map String String)
+entryViews loaded placed schedule history = snd (foldl' visit (Map.empty, Map.empty) (sortOn fst (imports ++ steps history schedule))) where
+    imports = [(key, (Nothing, paths)) | (key, line) <- placed, Just file <- [stripPrefix "Import " line], not (null file), last file == '.', Just unit <- [Map.lookup (init file) (loadedUnits loaded)], let paths = [n | Left (DeclareCustomEntry n) <- reverse (Env.syntaxHistory (unitSyntax unit))]]
+    steps _ [] = []
+    steps (rule:rules) ((k,(i,d,PublicSyntax)):more) = ((d,i,1), (Just k, paths)) : steps rules more where
+        paths = case rule of { Left (DeclareCustomEntry n) -> [n]; _ -> [] }
+    steps rules ((k,(i,d,PrivateScope op)):more) = ((d,i,1), (Just k, paths)) : steps rules more where
+        paths = case op of { DeclareCustomEntry n -> [n]; _ -> [] }
+    steps rules (_:more) = steps rules more
+    visit (visible, snapshots) (_, (index, paths)) = (foldl' (\scope n -> Map.insert (short n) n scope) visible paths, maybe snapshots (\k -> Map.insert k visible snapshots) index)
+
 -- Declarations have already been expanded. Restore the module's public reader
 -- only at the end, so replacing a module preserves its clients' syntax.
-publicGrammar :: Env.Env -> Env.Syntax -> Either String [String]
-publicGrammar env syntax = do
+publicGrammar :: [Maybe (Map.Map String String)] -> Env.Env -> Env.Syntax -> Either String [String]
+publicGrammar publicViews env syntax = do
     operators <- mapM infixLine (Map.toAscList (Env.syntaxInfix syntax))
     numerals <- case Env.syntaxNumerals syntax of
         Nothing -> Right []
@@ -417,9 +553,29 @@ publicGrammar env syntax = do
             z <- reference zero
             s <- reference successor
             return [unwords ["Numerals", z, s ++ "."]]
-    rules <- mapM notation (Env.syntaxRules syntax)
-    return (operators ++ numerals ++ rules)
+    rules <- mapM (notation Nothing) [r | r@(SyntaxRule _ _ _ target) <- Env.syntaxRules syntax, case target of { RocqTarget {} -> False; _ -> True }]
+    v1 <- sequence [either (scopeLine view) (notation view) item | (view,item) <- zip publicViews (reverse (Env.syntaxHistory syntax))]
+    return (operators ++ numerals ++ rules ++ v1)
     where
+        scopeLine _ (BindScope name placement classes) = do
+            labels <- mapM className classes
+            let prefix = case placement of { ReplaceScopes -> ""; AddTop -> "#[add_top] "; AddBottom -> "#[add_bottom] " }
+            return (prefix ++ "Bind Scope " ++ name ++ " with " ++ unwords labels ++ ".")
+        scopeLine view (ToggleInterpretation setting@(Activation _ _ _ selector _ _) params query) = do
+            body <- traverse reference query
+            let binders = case selector of { AliasSelector _ -> params; _ -> [] }
+            return (activationText (binders ++ [":=", "(" ++ Template.expression body ++ ")"]) (entrySetting view setting))
+        scopeLine view action = Right $ case action of
+            ToggleNotation setting -> activationText [] (entrySetting view setting)
+            DeclareCustomEntry n -> "Declare Custom Entry " ++ short n ++ "."
+            DeclareScope n -> "Declare Scope " ++ n ++ "."
+            DelimitScope n key -> unwords ["Delimit Scope",n,"with",key ++ "."]
+            OpenScope n -> "Open Scope " ++ n ++ "."
+            UndelimitScope n -> "Undelimit Scope " ++ n ++ "."
+            CloseScope n -> "Close Scope " ++ n ++ "."
+        className SortClass = Right "Sortclass"
+        className FunClass = Right "Funclass"
+        className (ReferenceClass g) = reference g
         reference global = maybe (Left "a public notation target has no printable name") Right (Pretty.globalName env global)
         options level assoc = " (at level " ++ show level ++ ", " ++ assoc ++ " associativity)."
         -- The lexer reads a notation pattern literally, including backslashes.
@@ -427,7 +583,13 @@ publicGrammar env syntax = do
         infixLine (symbol, (global, level, assoc)) = do
             name <- reference global
             return ("Infix " ++ literal symbol ++ " := " ++ name ++ options level assoc)
-        notation (SyntaxRule parts level assoc target) = case target of
+        entrySetting view (Activation on direction many selector sc table) = Activation on direction many selector sc (fmap (entryText view) table)
+        entryText view n
+            | n == Env.syntaxOwner syntax ++ "." ++ short n
+            , maybe True ((== Just n) . Map.lookup (short n)) view = short n
+            | otherwise = n
+        notation view (SyntaxRule parts level assoc target) = case target of
+            RocqTarget {} -> Template.render reference (SyntaxRule (map (mapRuleEntry (entryText view)) parts) level assoc target)
             TacticTarget name -> Right ("Tactic " ++ headText ++ name ++ ".")
             TermTarget global -> do
                 name <- reference global
@@ -486,15 +648,23 @@ loadObject kernel limits path = do
             dependencies <- foldM (dependency directory (Object.objectModule object : active)) (Right loaded) (Object.objectImports object)
             case dependencies of
                 Left problem -> return (Left problem)
-                Right current -> do
-                    let imports = map fst (Object.objectImports object)
-                    case importView current imports of
-                        Left (_, message) -> return (Left (failure actual "" origin "I-Object" message))
-                        Right (canonical, _) -> do
-                            view <- universeView current [] []
-                            replay current imports canonical view object actual digest
-        replay current imports canonical view object actual digest = do
-            let env = Env.withSyntax emptySyntax (Env.withNames Map.empty view)
+                Right current -> replayImport kernel limits actual Nothing object digest current
+
+-- Both an explicit .lolo and a cached source import admit every declaration
+-- under the actual dependency environments and lexical import positions.
+replayImport :: Kernel -> Limits -> FilePath -> Maybe String -> Object.ObjectFile -> String -> Loaded -> IO (Either Failure Loaded)
+replayImport kernel limits actual source object digest current = do
+    let imports = map fst (Object.objectImports object)
+    case importView current imports of
+        Left (_, message) -> return (Left (failure actual (maybe "" id source) origin "I-Object" message))
+        Right (canonical, direct) -> do
+            let grammar = importArguments current imports direct
+            view <- universeView current [] []
+            replay imports canonical grammar view
+    where
+        replay imports canonical grammar view = do
+            let owner = Object.objectModule object
+                env = Env.withSyntax (moduleGrammar owner) (Env.withNames Map.empty view)
                 activate previous [] = return (Right previous)
                 activate previous added@(first : _) = do
                     let roots = takeWhile (/= first) imports ++ added
@@ -504,7 +674,7 @@ loadObject kernel limits path = do
                         Left refusal -> Left (Object.ObjectRejected ("Import " ++ last added) refusal previous)
                         Right scoped -> case importView current roots of
                             Left (_, message) -> Left (Object.ObjectFormat message)
-                            Right (_, active) -> Right (Env.withSyntax (importArguments current roots active) (Env.withNames (Map.union (dependencyNames current roots) (Env.envNames previous)) scoped))
+                            Right (_, active) -> Right (Env.withSyntax (importArguments current roots active { Env.syntaxOwner = owner }) (Env.withNames (Map.union (dependencyNames current roots) (Env.envNames previous)) scoped))
             replayed <- Object.replayGroups kernel limits env object activate
             return $ case replayed of
                 Left (Object.ObjectFormat message) -> Left (failure actual "" origin "I-Object" message)
@@ -514,8 +684,8 @@ loadObject kernel limits path = do
                         own = Map.fromList [(given, global) | identity <- identities, Just entry <- [Map.lookup identity (Env.envDecls next)], (given, global) <- Env.declGlobals identity (Env.entryName entry) (Env.entryDecl entry)]
                         ownCanonical = Map.mapKeys ((Object.objectModule object ++ ".") ++) own
                         visible = Env.withNames (visibleNames own (Map.union ownCanonical canonical)) next
-                    exported <- either (Left . failure actual "" origin "I-Object") Right (Object.loadSyntaxOf (Object.objectModule object) (Map.union ownCanonical canonical) (Object.objectSyntax object))
-                    let unit = Unit (Object.objectModule object) actual "" imports identities ownCanonical exported object digest
+                    exported <- either (Left . failure actual "" origin "I-Object") Right (Object.loadSyntaxWith (Object.objectModule object) grammar (Map.union ownCanonical canonical) (Object.objectSyntax object))
+                    let unit = Unit (Object.objectModule object) actual source imports identities ownCanonical exported object digest
                     Right current { loadedEnv = visible, loadedUnits = Map.insert (unitName unit) unit (loadedUnits current), loadedOrder = loadedOrder current ++ [unitName unit] }
         annotated name diagnostic = diagnostic { diagnosticBody = ("object declaration: " ++ name) : diagnosticBody diagnostic }
 

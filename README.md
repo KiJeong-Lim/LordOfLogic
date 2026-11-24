@@ -1,5 +1,7 @@
 # LoL
 
+[V1 scopes, custom notation, Search, sections and the VS Code proof editor](docs/v1.md)
+
 **English** · [한국어](README.ko.md)
 
 LoL is a proof assistant for a calculus of inductive constructions. Its kernel
@@ -7,6 +9,13 @@ is a λProlog program, [`lol/hol/kernel.hol`](lol/hol/kernel.hol), and Hol runs
 it. Hol is the λProlog engine in this repository. The Haskell host reads
 commands, keeps modules and objects, and drives the engine. It implements no
 rule of reduction, conversion or typing.
+
+The kernel runs on the Hol compiler and C virtual machine. Their unifier, garbage
+collector and FFI, the positivity and guardedness oracles, the universe solver
+and the translations of terms and environments all contribute to the trust base.
+The local release checks compile the exported library and examples with Rocq
+9.2.0 and run the native examples under ASan and UBSan.
+[Reproduce the release checks](docs/verification.md)
 
 The surface language follows Rocq: `Inductive`, `Record`, `Fixpoint`,
 `match`, `Theorem … Proof. … Qed.`, notations and tactics. A checked module
@@ -18,6 +27,12 @@ go directly to [the language](docs/language.md), [modules and Rocq
 export](docs/modules.md), or [editor integration](docs/editor.md).
 
 ## Building
+
+The package accepts `filepath >= 1.4`. The local sanitizer build tests the
+1.4 lower bound. V1 supports sections and contexts. Its sorts are
+`Prop`, `Set` and `Type`. Coinduction, cofixpoints and `SProp` typing
+are outside this release. The language has no `Admitted` command and no
+option to disable universe checking.
 
 The repository was tested on Linux with GHC 9.6.7 and cabal-install 3.14.2.
 The C part of the engine needs a C11 compiler.
@@ -44,7 +59,7 @@ The run prints the result of each command as it is checked:
 ```text
 Nat -> Nat -> Nat
 Succ (Succ (Succ (Succ Zero)))
-The theorem was admitted.
+The theorem was accepted.
 (* No assumptions. *)
 ```
 
@@ -86,6 +101,7 @@ on.
 | [`STLC.lol`](example/STLC.lol) | a typing derivation, a reduction step and preservation for the simply typed lambda calculus |
 | [`Records.lol`](example/Records.lol) | a template record with primitive projections and definitional eta |
 | [`Universes.lol`](example/Universes.lol) | `Prop`, `Set` and `Type@{i}`, cumulativity and a universe-polymorphic definition |
+| [`V1Scopes.lol`](example/V1Scopes.lol), [`V1.lol`](example/V1.lol) | two meanings of one symbol, a custom grammar, section parameters and Search |
 | [`Notations.lol`](example/Notations.lol), [`Syntax.lol`](example/Syntax.lol) | a module that exports a notation and a tactic notation, and a module that uses them |
 | [`UserTactics.lol`](example/UserTactics.lol), [`UserTactics.hol`](example/UserTactics.hol) | two tactics written in Hol and loaded with `Load Tactics` |
 | [`Axioms.lol`](example/Axioms.lol) | an axiom, and `Print Assumptions` for a theorem that uses it and one that does not |
@@ -104,7 +120,7 @@ The files in [`example/rejected`](example/rejected) are rejected on purpose.
 
 ```text
 lol [OPTIONS] FILE.lol
-lol --check-only FILE.lolo
+lol --check-only [--no-axioms] FILE.lolo
 lol --interactive [FILE.lol]
 lol --server
 ```
@@ -116,7 +132,8 @@ lol --server
 | `--rocq` | print the main module as Rocq source |
 | `--rocq-dir=DIR` | write the Rocq source of the main module and its imports under `DIR` |
 | `--emit-object=FILE.lolo` | write a checked object of the module; its imports go to `.lolo/` beside it |
-| `--check-only` | check a `.lolo` object again with the kernel alone, without the source |
+| `--check-only` | recheck an object and its dependencies and report declarations and theorem assumptions |
+| `--no-axioms` | with `--check-only`, fail if any checked module declares an axiom |
 | `--work-limit=N` | bound the work of each run of the engine |
 | `--timeout-ms=N` | bound the time of each run of the engine, in milliseconds |
 | `--memory-mib=N` | bound the memory of the engine, in MiB |
@@ -197,9 +214,10 @@ Python client that steps through a proof, reads the goal and rewinds the cursor.
 
 - Declarations: `Inductive` (mutual blocks with `with`), `Record`,
   `Definition`, `Fixpoint`, `Theorem`, `Lemma`, `Axiom`, `Polymorphic`.
-- Queries: `Check`, `Compute`, `Print Assumptions`.
-- Modules: `Import`.
-- Syntax: `Infix`, `Notation`, `Tactic Notation`, `Arguments`, `Numerals`.
+- Queries: `Check`, `Compute`, `Print Assumptions`, `Search`.
+- Modules and sections: `Import`, `Section`, `Context`, `End`.
+- Syntax: `Infix`, `Notation`, `Reserved Notation`, `Declare Scope`, `Open Scope`,
+  `Declare Custom Entry`, `Tactic Notation`, `Arguments`, `Numerals`.
 - Proofs: `Proof`, `Qed`, `Show`, `Show Universes`, `Undo`, `Abort`,
   `Load Tactics`.
 
@@ -291,3 +309,14 @@ default `~/.cache/lol/hol-v2`). Set `LOL_HOL_CACHE=off` to turn this off.
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE).
+
+## Checked imports
+
+On POSIX a previously admitted source module can reuse its elaborated
+declarations from a private cache under `$XDG_CACHE_HOME/lord-of-logic/imports`
+(default `~/.cache/lord-of-logic/imports`). The loader verifies the source and
+Hol inputs, resolves its dependencies, and runs the kernel over the cached
+declarations. An unusable entry falls back to the source loader. Set
+`LOL_IMPORT_CACHE=off` for a source-only run, or `LOL_IMPORT_CACHE_TRACE=1` to
+show successful hits on standard error. Compiled Hol programs use their own
+`LOL_HOL_CACHE` setting.

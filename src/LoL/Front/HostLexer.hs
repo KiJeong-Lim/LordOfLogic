@@ -1,7 +1,10 @@
 module LoL.Front.HostLexer where
 
-import Data.Char (GeneralCategory (MathSymbol), generalCategory, isAsciiLower, isAsciiUpper)
-import Data.List (foldl')
+import Data.Char (GeneralCategory (..), generalCategory, isLetter)
+import Data.List (foldl', isPrefixOf, sortOn)
+import qualified Data.Map.Strict as Map
+import Data.Ord (Down (..))
+import qualified Data.Set as Set
 import LoL.Front.Syntax
 
 keywords :: [String]
@@ -21,17 +24,34 @@ digit :: Char -> Bool
 digit c = '0' <= c && c <= '9'
 
 identStart :: Char -> Bool
-identStart c = isAsciiLower c || isAsciiUpper c || c == '_'
+identStart c = c == '_' || isLetter c
 
 identContinue :: Char -> Bool
-identContinue c = identStart c || digit c || c == '\''
+identContinue c = identStart c || digit c || c == '\'' || c > '\x7f' && c `notElem` "⁰¹²³⁴⁵⁶⁷⁸⁹" && generalCategory c `elem` [DecimalNumber, LetterNumber, OtherNumber, NonSpacingMark]
 
 symbol :: Char -> Bool
 symbol c = c `elem` "!#$%&*+-/<=>?^~\\|:" || c > '\x7f' && generalCategory c == MathSymbol
 
 -- Scan directly at the caller's origin. End positions are inclusive.
 lexHost :: Position -> String -> Either FrontError [Token]
-lexHost = scan [] where
+lexHost = lexHostWith Set.empty
+
+-- Grammar terminals are lexical keywords. Read the longest contiguous
+-- terminal before the fixed punctuation scanner, without matching through
+-- spaces, comments, identifiers, strings or command boundaries.
+lexHostWith :: Set.Set String -> Position -> String -> Either FrontError [Token]
+lexHostWith literals = scan [] where
+    byInitial = Map.map (sortOn (Down . length)) (Map.fromListWith (++) [(head word,[word]) | word <- Set.toList literals, not (null word), not (identStart (head word)), not (digit (head word))])
+    terminal input@(c:_) = case Map.lookup c byInitial of
+        Just options -> case filter (\w -> w `isPrefixOf` input && not (any (longer w) fixedWords)) options of
+            w : _ -> Just w
+            _ -> Nothing
+        Nothing -> Nothing
+        where
+            longer w other = length other > length w && other `isPrefixOf` input
+    terminal [] = Nothing
+    fixedWords = ["#[", ".(", "@{", "..", ":=", "=>", "->"]
+
     scan acc _ [] = Right (reverse acc)
     scan acc start ('(' : '*' : more) = comment start acc (advance (advance start '(') '*') more
     scan acc start input@('"' : more) = case break (== '"') more of
@@ -41,9 +61,13 @@ lexHost = scan [] where
         | sourceSpace first = (scan acc $! advance start first) more
         | identStart first = qualified acc start [] input
         | digit first = let (value, rest) = span digit input in emit acc start "numeral" value value rest
-        | take 2 input `elem` ["#[", ".(", "@{"] = fixed (take 2 input) (drop 2 input)
+        | Just word <- terminal input =
+            let kind = if word `elem` fixedWords || word `elem` map pure "[];(){},.@:|" then word else "operator"
+            in emit acc start kind word word (drop (length word) input)
+        | take 2 input `elem` ["#[", ".(", "@{", ".."] = fixed (take 2 input) (drop 2 input)
         | symbol first = case span symbol input of
             (value, rest)
+                | value == "%" -> emit acc start "scope-delimiter" value value rest
                 | value `elem` [":", "|", ":=", "=>", "->"] -> fixed value rest
                 | otherwise -> emit acc start "operator" value value rest
         | first == '.', next : _ <- more, not (sourceSpace next) = failure start "L-Dot" "A command-ending dot must be followed by whitespace or end of input."

@@ -1,5 +1,7 @@
 # Lord of Logic repository reference
 
+[V1 language additions and the proof editor](v1.md)
+
 Lord of Logic (LoL) checks definitions and proofs written in `.lol` files.
 Use batch mode to check a whole file, the terminal to try one proof step at a
 time, or the editor server to drive a proof from an application.
@@ -27,7 +29,7 @@ LOL=$(cabal list-bin exe:lol)
 ```text
 Nat -> Nat -> Nat
 Succ (Succ (Succ (Succ Zero)))
-The theorem was admitted.
+The theorem was accepted.
 (* No assumptions. *)
 ```
 
@@ -104,7 +106,7 @@ branching midway through a file.
 | `lol --statements FILE.lol` | Read checked declarations with theorem signatures. |
 | `lol --explicit FILE.lol` | Inspect checked declarations with explicit arguments and proof terms. |
 | `lol --emit-object=FILE.lolo FILE.lol` | Write an object and its dependency objects. |
-| `lol --check-only FILE.lolo` | Recheck an object and the dependencies stored beside it. |
+| `lol --check-only [--no-axioms] FILE.lolo` | Recheck the object closure, list declarations and transitive theorem assumptions, and optionally reject any declared axiom. |
 | `lol --rocq FILE.lol` | Write the main module's Rocq source to standard output. |
 | `lol --rocq-dir=DIR FILE.lol` | Write the main module and its imports as a Rocq source tree. |
 | `lol --help` | Print the installed executable's usage. |
@@ -167,3 +169,14 @@ the [language walkthrough](language.md).
 
 The Hol program cache is under `$XDG_CACHE_HOME/lol/hol-v2` (by default
 `~/.cache/lol/hol-v2`). Set `LOL_HOL_CACHE=off` for a run that should bypass it.
+
+## Checked imports
+
+On POSIX a previously admitted source module can reuse its elaborated
+declarations from a private cache under `$XDG_CACHE_HOME/lord-of-logic/imports`
+(default `~/.cache/lord-of-logic/imports`). The loader verifies the source and
+Hol inputs, resolves its dependencies, and runs the kernel over the cached
+declarations. An unusable entry falls back to the source loader. Set
+`LOL_IMPORT_CACHE=off` for a source-only run, or `LOL_IMPORT_CACHE_TRACE=1` to
+show successful hits on standard error. Compiled Hol programs use their own
+`LOL_HOL_CACHE` setting.

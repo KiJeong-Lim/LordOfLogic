@@ -1,5 +1,7 @@
 # Defining types and functions in LoL
 
+[V1 scopes, custom notation and section variables](v1.md)
+
 **English** · [한국어](language.ko.md)
 
 Create `Walkthrough.lol` in the project root. Add the LoL examples below in order, except for the short example marked `ReadPublic.lol`, which goes in a second file. From the project root, run the following command after each step. `Check` prints the type of an expression and `Compute` prints its computed value.
@@ -52,7 +54,7 @@ You can also declare the argument implicit from the start by writing `{A : Set}`
 ## Term and tactic notation
 
 ```lol
-Local Notation "taller $term" := up (at level 9, right associativity).
+Local Notation "'taller' x" := (up x) (at level 9, right associativity).
 Local Tactic Notation "closewith $term" := exact.
 
 Compute taller base.
@@ -65,7 +67,7 @@ Qed.
 Print Assumptions retain.
 ```
 
-In a term, `taller base` computes to `up base`. In a proof, `closewith h.` runs `exact h.`. After `Qed.`, the assumptions report for `retain` reads `(* No assumptions. *)`.
+During computation, `taller base` reduces to `up base`. The active notation prints this value as `taller base`. In a proof, `closewith h.` runs `exact h.`. After `Qed.`, the assumptions report for `retain` reads `(* No assumptions. *)`.
 
 To use the addition operation from a second module, put the next two lines **in a separate file named `ReadPublic.lol`** beside `Walkthrough.lol`. Run `cabal run -v0 lol -- ReadPublic.lol` to see `up (up (up base))`. The `Local` declarations keep `taller` and `closewith` private to `Walkthrough.lol`.
 
@@ -90,7 +92,7 @@ Check unpack.
 Compute unpack sample.
 ```
 
-In `pack Height three`, the `carrier` field is `Height`, so the `point` field must hold a value of type `Height`. For an arbitrary package `p`, the type of `p.(point)` is `p.(carrier)`. Here `Check unpack.` prints `forall x : Package, x.(carrier)` and `Compute unpack sample.` prints `up (up (up base))`.
+In `pack Height three`, the `carrier` field is `Height`, so the `point` field must hold a value of type `Height`. For an arbitrary package `p`, the type of `p.(point)` is `p.(carrier)`. Here `Check unpack.` prints `forall x : Package, x.(carrier)` and `Compute unpack sample.` prints `taller taller taller base` using the local notation.
 
 `#[projections(primitive)]` selects primitive projections for this record. Rebuilding a value from all its projections yields a definitionally equal record, a property called record η (eta). In the `swap_swap` example, this lets `reflexivity.` finish the proof after `intros`. [Records and projections](../example/Records.lol)
 

@@ -362,7 +362,7 @@ scopeFailure :: Name -> String -> Build a
 scopeFailure name message = lift (Left (Diagnostic (nameSpan name) "LoL-ScopeError" "H-Name" message [nameText name]))
 
 resolveGlobal :: Env.Env -> Name -> Build Core.Global
-resolveGlobal env name = maybe (scopeFailure name ("unknown name: " ++ nameText name)) return (Map.lookup (nameText name) (Env.envNames env))
+resolveGlobal env name = maybe (scopeFailure name ("unknown name: " ++ nameText name)) return (lookupReference (Env.envNames env) name)
 
 reference :: Env.Env -> Scope -> Bool -> Name -> Build TermNode
 reference env scope explicit name = do
@@ -375,7 +375,7 @@ reference env scope explicit name = do
             DeferredProof _ aliases -> Set.member (nameText name) aliases
             _ -> False
         label = builtList (kindOf "char") (map (mkNCon . DC_ChrL) (nameText name))
-        global = case Map.lookup (nameText name) (Env.envNames env) of
+        global = case lookupReference (Env.envNames env) name of
             Just found -> referenceGlobal env scope (nameSpan name) explicit found
             Nothing
                 | deferred -> return (builtRaw "p_missing" [label])
@@ -553,6 +553,7 @@ encodeUnderWith command env scope source = do
             SBound index -> return (builtRaw "r_ref" [embedUnder (scopeShape scope) (Core.Var index), builtList (kindOf "rmode") []])
             SMask prefix count expr -> encodeUnder env (maskLocals (\(_, details) -> ("", details)) prefix count scope) expr
             SWithout name expr -> encodeUnder (Env.withNames (Map.delete (nameText name) (Env.envNames env)) env) scope expr
+            SExplicitGlobal global -> referenceGlobal env scope at True global
             SGlobal global -> referenceGlobal env scope at False global
             SExplicit name -> reference env scope True name
             SInstance explicit name levels
@@ -885,6 +886,7 @@ encodeMatch :: Env.Env -> Scope -> Span -> Term -> Maybe Name -> Maybe Pattern -
 encodeMatch env scope at scrutinee alias family clause branches = do
     known <- case family of
         Just (Pattern _ _ name _) -> Just <$> patternGlobal name
+        Just (RawPattern raw) -> failure (termSpan raw) "E-Syntax" "unexpanded pattern notation"
         Just (WildPattern place) -> failure place "E-Arity" "an in clause needs an inductive family"
         Nothing -> case [name | Branch _ (Pattern _ _ name _) _ <- branches] of
             name : _ -> Just <$> patternGlobal name
@@ -915,7 +917,7 @@ encodeMatch env scope at scrutinee alias family clause branches = do
         Nothing -> return (named "rr_none")
         Just term -> builtRaw (if maybe True (const False) family then "rr_auto" else "rr_some") . pure <$> abstractRaw env scope (indices ++ [self]) term
     arms <- concat <$> mapM (encodeBranch shape) (zip [0 ..] branches)
-    let labels = [(b, i, j) | Branch _ (Pattern _ _ name _) _ <- branches, Just (Core.GlobalCon b i j) <- [Map.lookup (nameText name) (Env.envNames env)]]
+    let labels = [(b, i, j) | Branch _ (Pattern _ _ name _) _ <- branches, Just (Core.GlobalCon b i j) <- [lookupReference (Env.envNames env) name]]
     if length labels /= length (nub labels) then failure at "E-Arity" "a constructor branch occurs more than once" else return ()
     let assertion = case familyId of
             Nothing -> named "rf_any"
@@ -924,11 +926,13 @@ encodeMatch env scope at scrutinee alias family clause branches = do
                 Just _ -> builtRaw "rf_pattern" [natural block, natural (toInteger index), natural (toInteger (length indices))]
     return (builtRaw "r_match" [term, assertion, result, builtList (kindOf "rbranch") arms])
     where
+        patternGlobal name@ResolvedName {} = resolveGlobal env name
         patternGlobal name
             | nameText name `elem` map fst scope = lift (Left (unsupported (nameSpan name) "a pattern head shadowed by a local variable"))
             | otherwise = resolveGlobal env name
-        covered = [constructor | Branch _ (Pattern _ _ name _) _ <- branches, Just (Core.GlobalCon _ _ constructor) <- [Map.lookup (nameText name) (Env.envNames env)]]
+        covered = [constructor | Branch _ (Pattern _ _ name _) _ <- branches, Just (Core.GlobalCon _ _ constructor) <- [lookupReference (Env.envNames env) name]]
         encodeBranch shape (place, Branch location pattern body) = case pattern of
+            RawPattern raw -> failure (termSpan raw) "E-Syntax" "unexpanded pattern notation"
             WildPattern _
                 | place + 1 /= length branches -> failure location "E-Arity" "a wildcard branch must be last"
                 | otherwise -> do
@@ -1015,6 +1019,7 @@ universeForm env form = case form of
     SInferredType -> True
     SUniverse _ -> True
     SInstance {} -> True
+    SExplicitGlobal global -> globalUniverseCount env global > 0
     SGlobal global -> globalUniverseCount env global > 0
     SName name -> polymorphic name
     SExplicit name -> polymorphic name
@@ -1022,8 +1027,9 @@ universeForm env form = case form of
     SMatch _ _ family _ branches -> any patternUses family || or [patternUses pat | Branch _ pat _ <- branches]
     _ -> False
     where
-        polymorphic name = maybe False ((> 0) . globalUniverseCount env) (Map.lookup (nameText name) (Env.envNames env))
+        polymorphic name = maybe False ((> 0) . globalUniverseCount env) (lookupReference (Env.envNames env) name)
         patternUses (Pattern _ _ name _) = polymorphic name
+        patternUses RawPattern {} = True
         patternUses WildPattern {} = False
 
 -- A term is read by the elaborator when it has something that is not
@@ -1058,11 +1064,12 @@ elaborationForm casts env = required where
         SFix functions _ -> or [isNothing struct || any binder binders | FixBody _ _ binders struct _ _ <- functions]
         _ -> False
     marked global = or (Map.findWithDefault [] global (Env.envArguments env))
-    namedArgument name = maybe False marked (Map.lookup (nameText name) (Env.envNames env))
+    namedArgument name = maybe False marked (lookupReference (Env.envNames env) name)
     binder value = binderImpl value || isNothing (binderType value)
+    patternNeeded RawPattern {} = True
     patternNeeded WildPattern {} = True
     patternNeeded (Pattern _ explicit name _) = primitivePattern name || not explicit && namedArgument name
-    primitivePattern name = case Map.lookup (nameText name) (Env.envNames env) of
+    primitivePattern name = case lookupReference (Env.envNames env) name of
         Just (Core.GlobalInd block index) -> primitiveFamily block index
         Just (Core.GlobalCon block index _) -> primitiveFamily block index
         _ -> False
@@ -1070,7 +1077,7 @@ elaborationForm casts env = required where
         Just (Env.Inductive _ families) -> isJust (atIndex index families >>= Env.familyRecord)
         _ -> False
     familyAlias arms = case arms of
-        Branch _ (Pattern _ _ name _) _ : _ -> case Map.lookup (nameText name) (Env.envNames env) of
+        Branch _ (Pattern _ _ name _) _ : _ -> case lookupReference (Env.envNames env) name of
             Just (Core.GlobalCon block index _) -> case Map.lookup block (Env.envDecls env) of
                 Just (Env.Entry { Env.entryDecl = Env.Inductive _ families }) -> maybe False (not . visibleTelescope . Env.familyType) (atIndex index families)
                 _ -> False
@@ -1081,7 +1088,7 @@ elaborationForm casts env = required where
         Core.Prop -> True
         Core.Type _ -> True
         _ -> False
-    unordered arms = or [j /= place | (place, Branch _ (Pattern _ _ name _) _) <- zip [0 ..] arms, Just (Core.GlobalCon _ _ j) <- [Map.lookup (nameText name) (Env.envNames env)]]
+    unordered arms = or [j /= place | (place, Branch _ (Pattern _ _ name _) _) <- zip [0 ..] arms, Just (Core.GlobalCon _ _ j) <- [lookupReference (Env.envNames env) name]]
 
 propose :: Kernel -> Limits -> Env.Env -> Maybe Term -> Term -> IO (Either Diagnostic (Core.Term, Core.Term))
 propose = proposeDisplaying id
@@ -1215,7 +1222,7 @@ proposeInductiveUniversesDisplaying display kernel limits environment requested 
                 [(nameText given, withSourceHints inner (Term location (SForall binders written)) value) | (Constructor location given written, value) <- zip constructors values])
         reportPosition positions report = maybe at (\index -> Map.findWithDefault at index positions) (reportSourceNumber report)
         -- The first term of a report of the elaborator is where it was made.
-        reportedTerms report = (if take 2 (reportRule report) == "E-" && maybe False (const True) (reportSourceNumber report) then drop 1 else id) (reportTerms (display environment) report)
+        reportedTerms report = (if take 2 (reportRule report) == "E-" && maybe False (const True) (reportSourceNumber report) then drop 1 else id) (reportTermsAt (display environment) (Core.universeNames initial) report)
         reportMessage report = fromMaybe "inductive universe elaboration failed" (unsettledLevel (reportRule report))
         concluding place = modify (\(next, positions, holes, constructor, template, defaults, proof, universes) -> (next, positions, holes, constructor, template, defaults, proof, fmap (\universe -> universe { buildingConclusion = place }) universes))
 
@@ -1323,8 +1330,8 @@ proposeCompletingMode display command premises constructor universeMode kernel l
         diagnostic code message = Diagnostic (termSpan source) "LoL-ElabError" code message
         reported positions report reason = Diagnostic at kind (reportRule report) message (terms ++ oracleReason) where
             oracleReason = if reportRule report `elem` ["F-Guard", "I-Pos"] then maybe [] (pure . ("the oracle says: " ++)) reason else []
-            terms = if located then drop 1 (reportTerms (display env) report) else reportTerms (display env) report
-            located = take 2 (reportRule report) == "E-" || (reportRule report == "F-Guard" && maybe False (const True) sourceNumber)
+            terms = (if located then drop 1 else id) (reportTermsAt (display env) (maybe [] (Core.universeNames . snd) universeMode) report)
+            located = maybe False (const True) sourceNumber && (take 2 (reportRule report) == "E-" || reportRule report == "F-Guard")
             location = if located then sourceNumber else Nothing
             sourceNumber = reportSourceNumber report
             at = maybe (termSpan source) (\number -> Map.findWithDefault (termSpan source) number positions) location
@@ -1462,7 +1469,7 @@ withSourceHints env source core = case (termForm source, core) of
             [] -> arm
         select number pattern body = case pattern of
             Pattern _ explicit name items
-                | Map.lookup (nameText name) (Env.envNames env) == Just (Core.GlobalCon block index number) -> [(drop (length parameters) (patternNames explicit (Core.GlobalCon block index number) items), body)]
+                | lookupReference (Env.envNames env) name == Just (Core.GlobalCon block index number) -> [(drop (length parameters) (patternNames explicit (Core.GlobalCon block index number) items), body)]
             WildPattern _ -> [(map (const "") (fst (arms !! number)), body)]
             _ -> []
     _ -> core

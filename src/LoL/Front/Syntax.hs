@@ -1,6 +1,8 @@
+{-# LANGUAGE DeriveFoldable, DeriveFunctor, DeriveTraversable, PatternSynonyms #-}
 module LoL.Front.Syntax where
 
 import Data.Char (isPrint)
+import qualified Data.Map.Strict as Map
 import GHC.Show (showLitChar)
 import LoL.Core (Global)
 
@@ -34,7 +36,18 @@ data Name
         { nameSpan :: Span
         , nameText :: String
         }
+    | ResolvedName
+        { nameSpan   :: Span
+        , nameText   :: String
+        , nameGlobal :: Global
+        }
     deriving (Eq, Ord, Show)
+
+-- Constructor heads and projection labels in a notation refer to their
+-- declaration even when the importing module shadows their spelling.
+lookupReference :: Map.Map String Global -> Name -> Maybe Global
+lookupReference _ (ResolvedName _ _ g) = Just g
+lookupReference globals name = Map.lookup (nameText name) globals
 
 data Term
     = Term
@@ -46,6 +59,11 @@ data Term
 data TermForm
     = SName Name
     | SGlobal Global
+    | SExplicitGlobal Global
+    | SNotation [RulePart] [Term]
+    | SDelimited Name Term
+    | SSequence [Term]
+    | SPatternOperand Pattern Term
     | SDeclared Name
     | SBound Int
     | SMask Int Int Term
@@ -110,6 +128,7 @@ data Binder
 data Pattern
     = Pattern Span Bool Name [Name]
     | WildPattern Span
+    | RawPattern Term
     deriving (Eq, Show)
 
 data Branch
@@ -128,15 +147,120 @@ data IndBody
     = IndBody Span Name [Binder] Term [Constructor]
     deriving (Eq, Show)
 
-data ArgSpec
-    = ArgSpec Span Bool Name
-    deriving (Eq, Show)
+data ArgSpec = Argument Span Bool Name [Name] deriving (Eq, Show)
+
+pattern ArgSpec :: Span -> Bool -> Name -> ArgSpec
+pattern ArgSpec position implicit name <- Argument position implicit name _ where
+    ArgSpec position implicit name = Argument position implicit name []
+
+data SearchItem = SearchTerm Term | SearchName String deriving (Eq, Show)
+
+data SearchScope = Everywhere | Inside [Name] | Outside [Name] deriving (Eq, Show)
 
 -- The name argument is a surface identifier before registration and a fixed
 -- global identity thereafter. Slot numbers in ScopedSlot count slots from 1.
-data RulePart = Literal String | TermSlot | NameSlot | ScopedSlot Int | TacticSlot deriving (Eq, Ord, Read, Show)
+data PatternEntry = NativePattern | CurrentPattern | OtherPattern (Maybe String) deriving (Eq, Ord, Read, Show)
 
-data RuleTarget a = TermTarget a | TacticTarget String deriving (Eq, Ord, Read, Show)
+patternEntry :: Maybe String -> PatternEntry -> Maybe String
+patternEntry _ NativePattern = Nothing
+patternEntry current CurrentPattern = current
+patternEntry _ (OtherPattern target) = target
+
+data RulePart = Literal String | TermSlot | BinderSlot | NameSlot | ScopedSlot Int | TacticSlot
+    | AliasHead String | AliasArg (Maybe String)
+    | EntryRoot String | EntrySlot (Maybe String) (Maybe Integer)
+    | AsNameSlot Bool (Maybe String) (Maybe Integer)
+    | PatternSlot PatternEntry Bool (Maybe Integer) | TokenSlot String | LevelSlot Integer | RepeatSlot String RulePart deriving (Eq, Ord, Read, Show)
+
+repeatOperand :: RulePart -> Bool
+repeatOperand TermSlot = True
+repeatOperand LevelSlot {} = True
+repeatOperand EntrySlot {} = True
+repeatOperand BinderSlot = True
+repeatOperand (TokenSlot "closed binder") = True
+repeatOperand _ = False
+
+-- A source spelling is resolved once when the rule is declared. Each entry
+-- in the stored production refers to the module that declared that entry.
+mapRuleEntry :: (String -> String) -> RulePart -> RulePart
+mapRuleEntry f (RepeatSlot separator item) = RepeatSlot separator (mapRuleEntry f item)
+mapRuleEntry f (EntryRoot name) = EntryRoot (f name)
+mapRuleEntry f (PatternSlot (OtherPattern entry) strict n) = PatternSlot (OtherPattern (fmap f entry)) strict n
+mapRuleEntry f (AsNameSlot strict entry n) = AsNameSlot strict (fmap f entry) n
+mapRuleEntry f (EntrySlot entry n) = EntrySlot (fmap f entry) n
+mapRuleEntry _ part = part
+
+-- A leading EntryRoot selects the production table; it does not consume a token or bind a variable.
+ruleEntry :: [RulePart] -> (Maybe String, [RulePart])
+ruleEntry (EntryRoot name : parts) = (Just name, parts)
+ruleEntry parts = (Nothing, parts)
+
+data TemplatePattern a = AnyPattern | VariablePattern String | ConstructorPattern Bool a [String]
+    deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable)
+
+data TemplateBranch a = TemplateBranch (TemplatePattern a) (Template a)
+    deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable)
+
+data TemplateLevel = UNumber Integer | UNamed String | UHole
+    | UOffset TemplateLevel Integer | UMaximum TemplateLevel TemplateLevel
+    deriving (Eq, Ord, Read, Show)
+
+data TemplateFunction a = TemplateFunction String [(Bool, [String], Maybe (Template a))] (Maybe String) (Template a) (Template a)
+    deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable)
+
+data Template a
+    = TReference Bool a
+    | TVariable String
+    | TApply (Template a) (Template a)
+    | TAbstraction Bool Bool String (Maybe (Template a)) (Template a)
+    | TLet String (Maybe (Template a)) (Template a) (Template a)
+    | TArrow (Template a) (Template a)
+    | TCast (Template a) (Template a)
+    | TSort String
+    | TNumber Integer
+    | TBlockName Bool String
+    | TProjection (Template a) a
+    | TCase (Template a) (Maybe String) (Maybe (TemplatePattern a)) (Maybe (Template a)) [TemplateBranch a]
+    | TFix [TemplateFunction a] (Maybe String)
+    | TInstance Bool a [TemplateLevel]
+    | TUniverse TemplateLevel
+    | TSlotScopes [(String, [String])] (Template a)
+    | TFormat String (Template a)
+    | TRecursion (Template a)
+    deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable)
+
+data Usage = BothWays | ParsingOnly | PrintingOnly | ReservedSyntax deriving (Eq, Ord, Read, Show)
+data RuleTarget a = TermTarget a | TacticTarget String
+    | RocqTarget (Maybe String) [String] Usage (Template a) deriving (Eq, Ord, Read, Show)
+
+data SyntaxLocality = DefaultSyntax | LocalSyntax | GlobalSyntax deriving (Eq, Show)
+
+data ScopeClass a = SortClass | FunClass | ReferenceClass a
+    deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable)
+
+data ScopePlacement = ReplaceScopes | AddTop | AddBottom deriving (Eq, Ord, Read, Show)
+
+data NotationSelector = PatternSelector String | AliasSelector String | EveryNotation deriving (Eq, Ord, Read, Show)
+
+data Activation = Activation Bool Usage Bool NotationSelector (Maybe String) (Maybe String) deriving (Eq, Ord, Read, Show)
+
+activationText :: [String] -> Activation -> String
+activationText interpretation (Activation enabled mode many selector scope entry) = unwords (command ++ destination ++ interpretation ++ opts ++ owner) ++ "." where
+    command = [if enabled then "Enable" else "Disable","Notation"]
+    destination = case selector of { PatternSelector pat -> [quoted pat]; AliasSelector n -> [n]; EveryNotation -> [] }
+    fields = ["all" | many] ++ ["only parsing" | mode == ParsingOnly] ++ ["only printing" | mode == PrintingOnly] ++ maybe [] (\e -> [if null e then "in constr" else "in custom " ++ e]) entry
+    opts = ["(" ++ foldr1 (\a b -> a ++ ", " ++ b) fields ++ ")" | not (null fields)]
+    owner = maybe [] (\n -> [":",if null n then "no scope" else n]) scope
+
+data ScopeAction a = DeclareCustomEntry String | DeclareScope String | DelimitScope String String
+    | OpenScope String | CloseScope String | UndelimitScope String
+    | ToggleNotation Activation | ToggleInterpretation Activation [String] (Template a)
+    | BindScope String ScopePlacement [ScopeClass a] deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable)
+
+-- Rebuild declaration-time argument scope policies in explicit module text.
+-- A public step consumes one event of the module's exported grammar history.
+data SyntaxStep a = PublicSyntax | ScopeLookup a | PrivateScope (ScopeAction a) | ArgumentStep Bool a [Bool] (Maybe [[String]]) | SectionStep a Int [Bool] [[String]]
+    deriving (Eq, Show, Functor, Foldable, Traversable)
 
 data SyntaxRule a = SyntaxRule [RulePart] Integer String (RuleTarget a) deriving (Eq, Ord, Read, Show)
 
@@ -145,15 +269,23 @@ data Command
     | CAxiom Span Name Term
     | CCheck Span Term
     | CCompute Span Term
+    | CSearch Span [(Bool, SearchItem)] SearchScope
     | CPrint Span Name
     | CPrintAssumptions Span Name
     | CInductive Span [IndBody]
     | CFixpoint Span [FixBody]
-    | CArguments Span Name [ArgSpec] [Name]
+    | CSetArguments Span SyntaxLocality Name [ArgSpec] [Name]
     | CInfix Span Name Name Integer (Maybe Name)
     | CNotation Span Bool (SyntaxRule Name)
+    | CRocqNotation Span SyntaxLocality [RulePart] Integer String (Maybe String) [String] Usage (Maybe String) Term
+    | CWhere Span Command [Command]
+    | CScope Span SyntaxLocality (ScopeAction Name)
+    | CSelectNotation Span SyntaxLocality Activation [String] Term
     | CNumerals Span Name Name
     | CImport Span Name
+    | CSection Span Name
+    | CContext Span [Binder]
+    | CEnd Span Name
     | CUniverses Span (Maybe UniverseDecl) Command
     | CTemplate Span Command
     | CPrimitive Span Bool [Name] Command
@@ -167,12 +299,17 @@ data Command
 -- its variable remains available while the original definition is checked.
 data RecordDefinition = RecordDefinition Command Command [Name] Int deriving (Eq, Show)
 
+pattern CArguments :: Span -> Name -> [ArgSpec] -> [Name] -> Command
+pattern CArguments pos name args opts <- CSetArguments pos _ name args opts where
+    CArguments pos name args opts = CSetArguments pos DefaultSyntax name args opts
+
 commandSpan :: Command -> Span
 commandSpan command = case command of
     CDefinition location _ _ _ _ _ -> location
     CAxiom location _ _ -> location
     CCheck location _ -> location
     CCompute location _ -> location
+    CSearch location _ _ -> location
     CPrint location _ -> location
     CPrintAssumptions location _ -> location
     CInductive location _ -> location
@@ -180,8 +317,15 @@ commandSpan command = case command of
     CArguments location _ _ _ -> location
     CInfix location _ _ _ _ -> location
     CNotation location _ _ -> location
+    CRocqNotation location _ _ _ _ _ _ _ _ _ -> location
+    CWhere location _ _ -> location
+    CSelectNotation location _ _ _ _ -> location
+    CScope location _ _ -> location
     CNumerals location _ _ -> location
     CImport location _ -> location
+    CSection location _ -> location
+    CContext location _ -> location
+    CEnd location _ -> location
     CUniverses location _ _ -> location
     CTemplate location _ -> location
     CPrimitive location _ _ _ -> location
@@ -194,6 +338,7 @@ commandKind command = case command of
     CAxiom {} -> "Axiom"
     CCheck {} -> "Check"
     CCompute {} -> "Compute"
+    CSearch {} -> "Search"
     CPrint {} -> "Print"
     CPrintAssumptions {} -> "Print Assumptions"
     CInductive {} -> "Inductive"
@@ -201,8 +346,15 @@ commandKind command = case command of
     CArguments {} -> "Arguments"
     CInfix {} -> "Infix"
     CNotation {} -> "Notation"
+    CRocqNotation {} -> "Notation"
+    CWhere _ cmd _ -> commandKind cmd
+    CSelectNotation {} -> "Notation"
+    CScope {} -> "Scope"
     CNumerals {} -> "Numerals"
     CImport {} -> "Import"
+    CSection {} -> "Section"
+    CContext {} -> "Context"
+    CEnd {} -> "End"
     CUniverses _ _ inner -> "Polymorphic " ++ commandKind inner
     CTemplate _ inner -> commandKind inner
     CPrimitive {} -> "Record"

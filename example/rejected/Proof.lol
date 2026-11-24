@@ -1,5 +1,5 @@
 (* A tactic that does not apply stops the file with a diagnostic of the
-   proof. Earlier commands are kept: the first theorem is admitted.
+   proof. Earlier commands are kept: the first theorem is accepted.
 
        cabal run -v0 lol -- example/rejected/Proof.lol
 *)
